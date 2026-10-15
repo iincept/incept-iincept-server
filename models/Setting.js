@@ -180,14 +180,24 @@ const settingSchema = new mongoose.Schema(
     heroSlides: [
       {
         title: { type: String, default: "" },
+        badge: { type: String, default: "" },
         titleBold: { type: String, default: "" },
         titleNormal: { type: String, default: "" },
         subtitle: { type: String, default: "" },
         buttonText: { type: String, default: "Learn More →" },
         buttonLink: { type: String, default: "#" },
+        secondaryButtonText: { type: String, default: "Find Nearest Store" },
+        secondaryButtonLink: { type: String, default: "#store-locator" },
         image: { type: String, default: "" },
+        mobileImage: { type: String, default: "" },
         bgStyle: { type: String, default: "slide-dark" },
         isActive: { type: Boolean, default: true },
+        hideText: { type: Boolean, default: false },
+        imageFit: { type: String, default: "contain" }, // contain, cover
+        focalPosition: { type: String, default: "right" }, // right, center, left
+        textAlignment: { type: String, default: "left" }, // left, center
+        overlayStyle: { type: String, default: "gradient" }, // gradient, none, solid
+        order: { type: Number, default: 0 },
         stat1Bold: { type: String, default: "GST invoicing" },
         stat1Normal: { type: String, default: "on every order" },
         stat2Bold: { type: String, default: "Volume pricing" },

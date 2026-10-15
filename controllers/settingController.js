@@ -790,7 +790,10 @@ const updateSettings = async (req, res) => {
     if (heroSubtitle4 !== undefined) settings.heroSubtitle4 = heroSubtitle4;
     if (heroButtonText4 !== undefined) settings.heroButtonText4 = heroButtonText4;
 
-    if (heroSlides !== undefined) settings.heroSlides = heroSlides;
+    if (heroSlides !== undefined) {
+      settings.heroSlides = heroSlides;
+      settings.markModified('heroSlides');
+    }
     if (appleCategories !== undefined) {
       settings.appleCategories = appleCategories.map(cat => ({
         ...cat,
