@@ -1,6 +1,111 @@
 const Product = require("../models/Product");
 const Category = require("../models/Category");
 const XLSX = require("xlsx");
+const { resolveColorHex, isValidHex, normalizeHex } = require("../utils/colorResolver");
+
+const sanitizeVariants = (variants) => {
+  if (!Array.isArray(variants)) return [];
+  const mongoose = require("mongoose");
+  return variants.map((v) => {
+    if (!v || typeof v !== "object") return v;
+    const vObj = v.toObject ? v.toObject() : { ...v };
+    let hex = vObj.colorHex;
+    if (hex && isValidHex(hex)) {
+      hex = normalizeHex(hex);
+    } else if (vObj.color) {
+      hex = resolveColorHex(vObj.color);
+    } else {
+      hex = "";
+    }
+
+    // Clean up _id if it's not a valid MongoDB ObjectId so Mongoose generates one
+    if (vObj._id && !mongoose.Types.ObjectId.isValid(vObj._id)) {
+      delete vObj._id;
+    }
+
+    const priceNum = vObj.price !== undefined && vObj.price !== "" ? Number(vObj.price) : 0;
+    const stockNum = vObj.stock !== undefined && vObj.stock !== "" ? Number(vObj.stock) : 0;
+    const discPriceNum = (vObj.discountPrice !== undefined && vObj.discountPrice !== "" && Number(vObj.discountPrice) >= 0) ? Number(vObj.discountPrice) : 0;
+    const discPctNum = (vObj.discountPercent !== undefined && vObj.discountPercent !== "" && Number(vObj.discountPercent) >= 0) ? Number(vObj.discountPercent) : 0;
+    const discNum = (vObj.discount !== undefined && vObj.discount !== "" && Number(vObj.discount) >= 0) ? Number(vObj.discount) : 0;
+
+    return {
+      ...vObj,
+      colorHex: hex,
+      price: !isNaN(priceNum) ? priceNum : 0,
+      stock: !isNaN(stockNum) ? stockNum : 0,
+      discountPrice: !isNaN(discPriceNum) ? discPriceNum : 0,
+      discountPercent: !isNaN(discPctNum) ? discPctNum : 0,
+      discount: !isNaN(discNum) ? discNum : 0,
+    };
+  });
+};
+
+const sanitizeColors = (colors, sanitizedVariants = []) => {
+  if (!Array.isArray(colors)) return [];
+  return colors.map((c) => {
+    if (typeof c === "string") {
+      const matched = sanitizedVariants.find(
+        (v) => (v.color || "").trim().toLowerCase() === c.trim().toLowerCase()
+      );
+      const hex = matched?.colorHex || resolveColorHex(c);
+      return {
+        name: c,
+        value: hex,
+        colorHex: hex,
+      };
+    }
+    if (c && typeof c === "object") {
+      const name = c.name || c.color || "";
+      const hex =
+        c.colorHex && isValidHex(c.colorHex)
+          ? normalizeHex(c.colorHex)
+          : c.value && isValidHex(c.value)
+          ? normalizeHex(c.value)
+          : resolveColorHex(name);
+      return {
+        ...c,
+        name,
+        value: hex,
+        colorHex: hex,
+      };
+    }
+    return c;
+  });
+};
+
+const attachFallbackColorHex = (product) => {
+  if (!product) return product;
+  const p = product.toObject ? product.toObject() : { ...product };
+  if (p.variants && Array.isArray(p.variants)) {
+    p.variants = p.variants.map((v) => {
+      const vObj = v && v.toObject ? v.toObject() : { ...v };
+      if (vObj && vObj.color && (!vObj.colorHex || !isValidHex(vObj.colorHex))) {
+        return { ...vObj, colorHex: resolveColorHex(vObj.color) };
+      }
+      return vObj;
+    });
+  }
+  if (p.colors && Array.isArray(p.colors)) {
+    p.colors = p.colors.map((c) => {
+      if (typeof c === "string") {
+        const hex = resolveColorHex(c);
+        return { name: c, value: hex, colorHex: hex };
+      }
+      if (c && typeof c === "object") {
+        const hex =
+          c.colorHex && isValidHex(c.colorHex)
+            ? normalizeHex(c.colorHex)
+            : c.value && isValidHex(c.value)
+            ? normalizeHex(c.value)
+            : resolveColorHex(c.name || "");
+        return { ...c, value: hex, colorHex: hex };
+      }
+      return c;
+    });
+  }
+  return p;
+};
 
 // Helper to generate unique slugs
 const slugify = (text) => {
@@ -73,35 +178,71 @@ const createProduct = async (req, res) => {
 
     const slug = await generateUniqueSlug(title);
 
+    if (Array.isArray(variants)) {
+      for (const [idx, v] of variants.entries()) {
+        if (!v || typeof v !== "object") continue;
+        if (v.price !== undefined && v.price !== "" && Number(v.price) < 0) {
+          return res.status(400).json({ message: `Variant #${idx + 1} price cannot be negative.` });
+        }
+        if (v.stock !== undefined && v.stock !== "" && Number(v.stock) < 0) {
+          return res.status(400).json({ message: `Variant #${idx + 1} stock cannot be negative.` });
+        }
+        if (v.discountPrice !== undefined && v.discountPrice !== "" && Number(v.discountPrice) < 0) {
+          return res.status(400).json({ message: `Variant #${idx + 1} discount price cannot be negative.` });
+        }
+      }
+    }
+
+    const processedVariants = sanitizeVariants(variants);
+    const processedColors = sanitizeColors(colors, processedVariants);
+
+    let finalPrice = Number(price);
+    if ((isNaN(finalPrice) || finalPrice <= 0) && processedVariants.length > 0) {
+      const validV = processedVariants.map(v => Number(v.price)).filter(p => !isNaN(p) && p > 0);
+      if (validV.length > 0) finalPrice = Math.min(...validV);
+    }
+    if (isNaN(finalPrice)) finalPrice = 0;
+
+    let finalStock = Number(stock);
+    if ((isNaN(finalStock) || finalStock <= 0) && processedVariants.length > 0) {
+      finalStock = processedVariants.reduce((sum, v) => sum + (Number(v.stock) || 0), 0);
+    }
+    if (isNaN(finalStock)) finalStock = 0;
+
+    const finalDisplayImage = displayImage || (processedVariants[0]?.images?.[0]) || (images?.[0]) || "";
+
     const product = await Product.create({
       title,
       slug,
       description,
-      price,
-      discountPrice,
-      discountPercent,
-      discount,
-      images,
+      price: finalPrice,
+      discountPrice: discountPrice || 0,
+      discountPercent: discountPercent || 0,
+      discount: discount || 0,
+      images: images && images.length > 0 ? images : (finalDisplayImage ? [finalDisplayImage] : []),
       category,
       brand,
-      stock,
+      stock: finalStock,
       sizes: sizes || [],
       accessoriesSizes: accessoriesSizes || [],
       bandSizes: bandSizes || [],
       connectivities: connectivities || [],
       glasses: glasses || [],
       processors: processors || [],
-      colors: colors || [],
+      colors: processedColors,
       storage: storage || [],
       ram: ram || [],
       material: material || [],
       features: features || [],
       rating,
-      variants: variants || [],
+      variants: processedVariants,
       partNumber: partNumber || "",
       modelNumber: modelNumber || "",
-      displayImage: displayImage || "",
+      displayImage: finalDisplayImage,
       colorImages: colorImages || {},
+      seoTitle: req.body.seoTitle || "",
+      seoDescription: req.body.seoDescription || "",
+      tags: req.body.tags || [],
     });
 
     res.status(201).json(product);
@@ -117,6 +258,10 @@ const createProduct = async (req, res) => {
       } catch (retryError) {
         return res.status(400).json({ message: "Duplicate product title/slug. Please use a unique title." });
       }
+    }
+    if (error.name === "ValidationError") {
+      const msg = Object.values(error.errors || {}).map(e => e.message).join(", ") || error.message;
+      return res.status(400).json({ message: msg, errors: error.errors });
     }
     res.status(500).json({ message: error.message });
   }
@@ -187,19 +332,35 @@ const updateProduct = async (req, res) => {
     if (connectivities) product.connectivities = connectivities;
     if (glasses) product.glasses = glasses;
     if (processors) product.processors = processors;
-    if (colors) product.colors = colors;
-    if (storage) product.storage = storage;
-    if (ram) product.ram = ram;
-    if (material) product.material = material;
-    if (features) product.features = features;
-    if (rating !== undefined) product.rating = rating;
-    if (variants !== undefined) product.variants = variants;
+    if (variants !== undefined && Array.isArray(variants)) {
+      for (const [idx, v] of variants.entries()) {
+        if (!v || typeof v !== "object") continue;
+        if (v.price !== undefined && v.price !== "" && Number(v.price) < 0) {
+          return res.status(400).json({ message: `Variant #${idx + 1} price cannot be negative.` });
+        }
+        if (v.stock !== undefined && v.stock !== "" && Number(v.stock) < 0) {
+          return res.status(400).json({ message: `Variant #${idx + 1} stock cannot be negative.` });
+        }
+        if (v.discountPrice !== undefined && v.discountPrice !== "" && Number(v.discountPrice) < 0) {
+          return res.status(400).json({ message: `Variant #${idx + 1} discount price cannot be negative.` });
+        }
+      }
+    }
+
+    if (variants !== undefined) product.variants = sanitizeVariants(variants);
+    if (colors !== undefined) product.colors = sanitizeColors(colors, product.variants || []);
     if (partNumber !== undefined) product.partNumber = partNumber;
     if (modelNumber !== undefined) product.modelNumber = modelNumber;
     if (displayImage !== undefined) product.displayImage = displayImage;
     if (colorImages !== undefined) product.colorImages = colorImages;
-    if (discountPercent !== undefined) product.discountPercent = discountPercent;
-    if (discount !== undefined) product.discount = discount;
+    if (storage !== undefined) product.storage = storage;
+    if (ram !== undefined) product.ram = ram;
+    if (material !== undefined) product.material = material;
+    if (features !== undefined) product.features = features;
+    if (rating !== undefined) product.rating = rating;
+    if (req.body.seoTitle !== undefined) product.seoTitle = req.body.seoTitle;
+    if (req.body.seoDescription !== undefined) product.seoDescription = req.body.seoDescription;
+    if (req.body.tags !== undefined) product.tags = req.body.tags;
 
     const isRemovingDiscount = discountPrice === 0 || discountPrice === "0" || discountPrice === null || (req.body.hasOwnProperty('discountPrice') && req.body.discountPrice === "");
 
@@ -254,6 +415,13 @@ const updateProduct = async (req, res) => {
 
     res.status(200).json(updatedProduct);
   } catch (error) {
+    if (error.name === "ValidationError") {
+      const msg = Object.values(error.errors || {}).map(e => e.message).join(", ") || error.message;
+      return res.status(400).json({ message: msg, errors: error.errors });
+    }
+    if (error.code === 11000) {
+      return res.status(400).json({ message: "Duplicate product title/slug. Please use a unique title." });
+    }
     res.status(500).json({ message: error.message });
   }
 };
@@ -343,7 +511,8 @@ const getProducts = async (req, res) => {
       .populate("category", "name slug")
       .sort(sort);
 
-    res.status(200).json(products);
+    const formatted = products.map((p) => attachFallbackColorHex(p));
+    res.status(200).json(formatted);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -421,7 +590,7 @@ const getProductById = async (req, res) => {
     if (!product) {
       return res.status(404).json({ message: "Product not found" });
     }
-    res.status(200).json(product);
+    res.status(200).json(attachFallbackColorHex(product));
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -806,10 +975,13 @@ const importProductsExcel = async (req, res) => {
         if (ram) ramSet.add(ram);
         if (chip) chipSet.add(chip);
 
+        const varColorHex = resolveColorHex(color);
+
         variants.push({
           title: variantTitle,
           displayTitle: variantTitle,
           color,
+          colorHex: varColorHex,
           size,
           storage,
           ram,
@@ -863,8 +1035,14 @@ const importProductsExcel = async (req, res) => {
         existing.price = minMrp || existing.price;
         existing.discountPrice = minFinal || existing.discountPrice;
         existing.stock = totalStock;
+        const processedExcelColors = Array.from(colorsSet).map((cName) => {
+          const matchedV = variants.find((v) => (v.color || "").toLowerCase() === cName.toLowerCase());
+          const h = matchedV?.colorHex || resolveColorHex(cName);
+          return { name: cName, value: h, colorHex: h };
+        });
+
         existing.variants = variants;
-        existing.colors = Array.from(colorsSet);
+        existing.colors = processedExcelColors;
         existing.sizes = Array.from(sizesSet);
         existing.storage = Array.from(storageSet);
         existing.ram = Array.from(ramSet);
@@ -875,6 +1053,12 @@ const importProductsExcel = async (req, res) => {
         updatedCount++;
       } else {
         const slug = await generateUniqueSlug(item.title);
+        const processedExcelColors = Array.from(colorsSet).map((cName) => {
+          const matchedV = variants.find((v) => (v.color || "").toLowerCase() === cName.toLowerCase());
+          const h = matchedV?.colorHex || resolveColorHex(cName);
+          return { name: cName, value: h, colorHex: h };
+        });
+
         await Product.create({
           title: item.title,
           slug,
@@ -885,7 +1069,7 @@ const importProductsExcel = async (req, res) => {
           discountPrice: minFinal,
           stock: totalStock,
           variants,
-          colors: Array.from(colorsSet),
+          colors: processedExcelColors,
           sizes: Array.from(sizesSet),
           storage: Array.from(storageSet),
           ram: Array.from(ramSet),
