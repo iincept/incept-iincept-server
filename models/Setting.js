@@ -190,11 +190,12 @@ const settingSchema = new mongoose.Schema(
         secondaryButtonLink: { type: String, default: "#store-locator" },
         image: { type: String, default: "" },
         mobileImage: { type: String, default: "" },
+        isMobileActive: { type: Boolean, default: true },
         bgStyle: { type: String, default: "slide-dark" },
         isActive: { type: Boolean, default: true },
         hideText: { type: Boolean, default: false },
         imageFit: { type: String, default: "contain" }, // contain, cover
-        focalPosition: { type: String, default: "right" }, // right, center, left
+        focalPosition: { type: String, default: "center" }, // center, right, left
         textAlignment: { type: String, default: "left" }, // left, center
         overlayStyle: { type: String, default: "gradient" }, // gradient, none, solid
         order: { type: Number, default: 0 },
@@ -324,6 +325,16 @@ const settingSchema = new mongoose.Schema(
           categoryName: { type: String, default: "" },
           monthlyPrice: { type: String, default: "" },
           mrpPrice: { type: String, default: "" }
+        }
+      ],
+      plans: [
+        {
+          id: { type: String, default: "" },
+          name: { type: String, default: "" },
+          price: { type: Number, default: 0 },
+          duration: { type: String, default: "2 Years" },
+          description: { type: String, default: "" },
+          isActive: { type: Boolean, default: true }
         }
       ]
     },

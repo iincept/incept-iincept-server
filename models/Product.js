@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const VariantSchema = new mongoose.Schema({
   size: String,
   bandSize: String,
+  strapSize: String,
   connectivity: String,
   color: String,
   colorHex: { type: String, trim: true, default: "" },
@@ -89,6 +90,10 @@ const productSchema = new mongoose.Schema(
       default: [],
     },
     bandSizes: {
+      type: [String],
+      default: [],
+    },
+    strapSizes: {
       type: [String],
       default: [],
     },

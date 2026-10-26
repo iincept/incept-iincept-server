@@ -154,6 +154,7 @@ const createProduct = async (req, res) => {
       sizes,
       accessoriesSizes,
       bandSizes,
+      strapSizes,
       connectivities,
       glasses,
       processors,
@@ -226,6 +227,7 @@ const createProduct = async (req, res) => {
       sizes: sizes || [],
       accessoriesSizes: accessoriesSizes || [],
       bandSizes: bandSizes || [],
+      strapSizes: strapSizes || [],
       connectivities: connectivities || [],
       glasses: glasses || [],
       processors: processors || [],
@@ -285,6 +287,7 @@ const updateProduct = async (req, res) => {
       sizes,
       accessoriesSizes,
       bandSizes,
+      strapSizes,
       connectivities,
       glasses,
       processors,
@@ -329,6 +332,7 @@ const updateProduct = async (req, res) => {
     if (sizes) product.sizes = sizes;
     if (accessoriesSizes) product.accessoriesSizes = accessoriesSizes;
     if (bandSizes) product.bandSizes = bandSizes;
+    if (strapSizes) product.strapSizes = strapSizes;
     if (connectivities) product.connectivities = connectivities;
     if (glasses) product.glasses = glasses;
     if (processors) product.processors = processors;

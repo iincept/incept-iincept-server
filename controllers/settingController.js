@@ -138,6 +138,8 @@ const getSettings = async (req, res) => {
           buttonText: settings.heroButtonText1 || "Request Bulk Quote →",
           buttonLink: "#procurement-section",
           image: "",
+          mobileImage: "",
+          isMobileActive: true,
           bgStyle: "slide-dark",
           isActive: true,
         },
@@ -147,6 +149,8 @@ const getSettings = async (req, res) => {
           buttonText: settings.heroButtonText2 || "Browse Catalogue →",
           buttonLink: "#apple-categories",
           image: "",
+          mobileImage: "",
+          isMobileActive: true,
           bgStyle: "slide-light",
           isActive: true,
         },
@@ -156,6 +160,8 @@ const getSettings = async (req, res) => {
           buttonText: settings.heroButtonText3 || "Explore AppleCare+ →",
           buttonLink: "/apple-care",
           image: "",
+          mobileImage: "",
+          isMobileActive: true,
           bgStyle: "slide-dark-blue",
           isActive: true,
         },
@@ -165,6 +171,8 @@ const getSettings = async (req, res) => {
           buttonText: settings.heroButtonText4 || "Explore Accessories →",
           buttonLink: "/accessories",
           image: "",
+          mobileImage: "",
+          isMobileActive: true,
           bgStyle: "slide-warm",
           isActive: true,
         },
@@ -697,9 +705,50 @@ const updateSettings = async (req, res) => {
           { categoryName: "iPhone", monthlyPrice: "From ₹1483.00/mo.◊", mrpPrice: "or MRP ₹8900.00 (inclusive of all taxes)" },
           { categoryName: "iPad", monthlyPrice: "From ₹1150.00/mo.◊", mrpPrice: "or MRP ₹6900.00 (inclusive of all taxes)" },
           { categoryName: "Watch", monthlyPrice: "From ₹750.00/mo.◊", mrpPrice: "or MRP ₹4500.00 (inclusive of all taxes)" },
-          { categoryName: "AirPods", monthlyPrice: "From ₹483.00/mo.◊", mrpPrice: "or MRP ₹2900.00 (inclusive of all taxes)" }
+          { categoryName: "AirPods", monthlyPrice: "From ₹483.00/mo.◊", mrpPrice: "or MRP ₹2900.00 (inclusive of all taxes)" },
+          { categoryName: "TV & Home", monthlyPrice: "From ₹483.00/mo.◊", mrpPrice: "or MRP ₹2900.00 (inclusive of all taxes)" }
+        ],
+        plans: [
+          {
+            id: '1yr',
+            name: 'AppleCare+ (1 Year Coverage)',
+            price: 1999,
+            duration: '1 Year',
+            description: 'Official 1-Year hardware protection & accidental damage coverage',
+            isActive: true
+          },
+          {
+            id: '2yr',
+            name: 'AppleCare+ (2 Years Coverage)',
+            price: 2900,
+            duration: '2 Years',
+            description: 'Full 2 Years protection with unlimited repairs & priority Apple support',
+            isActive: true
+          }
         ]
       };
+      await settings.save();
+    }
+
+    if (settings.productAppleCare && (!settings.productAppleCare.plans || settings.productAppleCare.plans.length === 0)) {
+      settings.productAppleCare.plans = [
+        {
+          id: '1yr',
+          name: 'AppleCare+ (1 Year Coverage)',
+          price: 1999,
+          duration: '1 Year',
+          description: 'Official 1-Year hardware protection & accidental damage coverage',
+          isActive: true
+        },
+        {
+          id: '2yr',
+          name: 'AppleCare+ (2 Years Coverage)',
+          price: 2900,
+          duration: '2 Years',
+          description: 'Full 2 Years protection with unlimited repairs & priority Apple support',
+          isActive: true
+        }
+      ];
       await settings.save();
     }
 
