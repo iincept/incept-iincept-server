@@ -1,42 +1,33 @@
 const mongoose = require("mongoose");
 
 const connectDB = async () => {
-  const localUri = process.env.LOCAL_MONGO_URI || "mongodb://127.0.0.1:27017/ecommerce17";
-  const cloudUri = process.env.MONGO_URI;
+  const mongoUri = process.env.MONGO_URI;
 
-  // Priority local connection when USE_LOCAL_DB is true or Atlas fails
-  if (process.env.USE_LOCAL_DB === "true") {
-    try {
-      await mongoose.connect(localUri);
-      console.log("MongoDB Connected to Local Database (ecommerce17)");
-      return;
-    } catch (err) {
-      console.warn("Local DB connection error:", err.message);
-    }
+  if (!mongoUri) {
+    console.error("Error: MONGO_URI is not defined in environment variables!");
+    process.exit(1);
   }
 
-  try {
-    if (cloudUri) {
-      await mongoose.connect(cloudUri, {
-        serverSelectionTimeoutMS: 2000,
+  const connectWithRetry = async (retryCount = 0) => {
+    try {
+      const conn = await mongoose.connect(mongoUri, {
+        serverSelectionTimeoutMS: 15000,
         tls: true,
         tlsAllowInvalidCertificates: true
       });
-      console.log("MongoDB Connected to Cloud Atlas");
-      return;
+      console.log(`MongoDB Connected to Cloud Atlas: ${conn.connection.host}/${conn.connection.name}`);
+    } catch (error) {
+      console.error(`MongoDB Atlas Connection Error (attempt ${retryCount + 1}):`, error.message);
+      if (retryCount < 5) {
+        console.log("Retrying MongoDB connection in 3 seconds...");
+        setTimeout(() => connectWithRetry(retryCount + 1), 3000);
+      } else {
+        console.error("MongoDB Atlas: Max retry attempts reached. Please verify internet and Atlas IP Whitelist (0.0.0.0/0).");
+      }
     }
-  } catch (error) {
-    console.warn("Cloud Atlas SSL / IP Whitelist Error:", error.message);
-    console.warn("Falling back to Local Database (ecommerce17)...");
-  }
+  };
 
-  try {
-    await mongoose.connect(localUri);
-    console.log("MongoDB Connected to Local Database (ecommerce17)");
-  } catch (localError) {
-    console.error("Local MongoDB Connection Error:", localError.message);
-    process.exit(1);
-  }
+  connectWithRetry();
 };
 
 module.exports = connectDB;

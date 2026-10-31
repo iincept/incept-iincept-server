@@ -105,6 +105,7 @@ const settingSchema = new mongoose.Schema(
         dealButtonLink: { type: String, default: "/macbook" },
         displayOrder: { type: Number, default: 0 },
         isActive: { type: Boolean, default: true },
+        isFullBanner: { type: Boolean, default: false },
       },
     ],
     homeCategoryIcons: [

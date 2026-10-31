@@ -2,7 +2,7 @@ require("dotenv").config();
 const mongoose = require("mongoose");
 const User = require("./models/User");
 
-const MONGO_URI = (process.env.USE_LOCAL_DB === "true" ? process.env.LOCAL_MONGO_URI : process.env.MONGO_URI) || "mongodb://127.0.0.1:27017/ecommerce17";
+const MONGO_URI = process.env.MONGO_URI;
 
 const seedAdmin = async () => {
   try {
