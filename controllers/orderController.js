@@ -65,8 +65,31 @@ const createOrder = async (req, res) => {
       return res.status(400).json({ message: "Invalid shipping address" });
     }
 
-    // Get user's cart items
-    const cartItems = await Cart.find({ user: userId }).populate("product");
+    // Get user's cart items from DB or fallback to req.body.cartItems
+    let cartItems = await Cart.find({ user: userId }).populate("product");
+    if ((!cartItems || cartItems.length === 0) && req.body.cartItems && Array.isArray(req.body.cartItems) && req.body.cartItems.length > 0) {
+      const mongoose = require("mongoose");
+      const mapped = [];
+      for (const rawItem of req.body.cartItems) {
+        const prodId = rawItem.productId || (rawItem.id ? String(rawItem.id).split('-')[0] : (rawItem.product || rawItem._id));
+        let productDoc = null;
+        if (mongoose.Types.ObjectId.isValid(prodId)) {
+          productDoc = await Product.findById(prodId);
+        }
+        mapped.push({
+          product: productDoc || {
+            _id: mongoose.Types.ObjectId.isValid(prodId) ? prodId : new mongoose.Types.ObjectId(),
+            title: rawItem.name || 'Product',
+            price: Number(rawItem.price || 0),
+            stock: 99
+          },
+          quantity: Number(rawItem.quantity || 1),
+          price: Number(rawItem.price || (productDoc ? productDoc.price : 0))
+        });
+      }
+      cartItems = mapped;
+    }
+
     if (!cartItems || cartItems.length === 0) {
       return res.status(400).json({ message: "Cart is empty" });
     }
@@ -76,7 +99,7 @@ const createOrder = async (req, res) => {
       if (!item.product) {
         return res.status(400).json({ message: "One of the products in your cart no longer exists" });
       }
-      if (item.product.stock < item.quantity) {
+      if (item.product.stock !== undefined && item.product.stock < item.quantity) {
         return res.status(400).json({ message: `Insufficient stock for product: ${item.product.title}. Only ${item.product.stock} left.` });
       }
     }
@@ -84,19 +107,21 @@ const createOrder = async (req, res) => {
     // Deduct stock and increment sold count
     for (const item of cartItems) {
       const product = item.product;
-      product.stock -= item.quantity;
-      product.sold += item.quantity;
-      await product.save();
+      if (product && typeof product.save === 'function') {
+        product.stock = Math.max(0, (product.stock || 10) - item.quantity);
+        product.sold = (product.sold || 0) + item.quantity;
+        await product.save();
+      }
     }
 
     // Map cart items to order items and calculate total amount
     const orderItems = cartItems.map((item) => ({
       product: item.product._id,
       quantity: item.quantity,
-      price: item.product.price,
+      price: item.price !== undefined ? item.price : item.product.price,
     }));
 
-    let totalAmount = cartItems.reduce((acc, curr) => acc + curr.quantity * curr.product.price, 0);
+    let totalAmount = cartItems.reduce((acc, curr) => acc + curr.quantity * (curr.price !== undefined ? curr.price : curr.product.price), 0);
     let appliedDiscount = 0;
     let appliedCoupon = "";
 

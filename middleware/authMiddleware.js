@@ -41,7 +41,7 @@ const protect = async (req, res, next) => {
 
       next();
     } catch (error) {
-      if (process.env.USE_LOCAL_DB === "true" || req.hostname === "localhost" || req.hostname === "127.0.0.1") {
+      if (process.env.USE_LOCAL_DB === "true") {
         req.user = await User.findOne({ role: "admin" }).select("-password");
         if (req.user) {
           return next();
@@ -53,7 +53,7 @@ const protect = async (req, res, next) => {
   }
 
   if (!token) {
-    if (process.env.USE_LOCAL_DB === "true" || req.hostname === "localhost" || req.hostname === "127.0.0.1") {
+    if (process.env.USE_LOCAL_DB === "true") {
       req.user = await User.findOne({ role: "admin" }).select("-password");
       if (req.user) {
         return next();
