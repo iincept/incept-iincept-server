@@ -98,6 +98,7 @@ const settingSchema = new mongoose.Schema(
         dealDesc: { type: String, default: "" },
         productId: { type: String, default: "" },
         dealImage: { type: String, default: "/mac_deal_fan.png" },
+        mobileDealImage: { type: String, default: "" },
         mrp: { type: Number, default: 79900 },
         discount: { type: Number, default: 0 },
         dealPrice: { type: Number, default: 72900 },
