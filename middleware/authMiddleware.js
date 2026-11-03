@@ -16,51 +16,27 @@ const protect = async (req, res, next) => {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
       // Get user from the token, attach to request object
-      req.user = await User.findById(decoded.id).select("-password");
+      if (decoded.id) {
+        req.user = await User.findById(decoded.id).select("-password");
+      }
 
-      // Fallback lookup by email or admin role if ID shifted during database migration
+      // Safe fallback lookup by verified email for this specific account
       if (!req.user && decoded.email) {
-        req.user = await User.findOne({ email: decoded.email }).select("-password");
-      }
-
-      if (!req.user && (decoded.role === "admin" || decoded.isAdmin)) {
-        req.user = await User.findOne({ role: "admin" }).select("-password");
-      }
-
-      if (!req.user) {
-        req.user = await User.findOne({ role: "admin" }).select("-password");
-      }
-
-      if (!req.user) {
-        req.user = await User.findOne().select("-password");
+        req.user = await User.findOne({ email: String(decoded.email).toLowerCase() }).select("-password");
       }
 
       if (!req.user) {
         return res.status(401).json({ message: "Not authorized, user not found" });
       }
 
-      next();
+      return next();
     } catch (error) {
-      if (process.env.USE_LOCAL_DB === "true") {
-        req.user = await User.findOne({ role: "admin" }).select("-password");
-        if (req.user) {
-          return next();
-        }
-      }
-      console.error(error);
+      console.error("Auth middleware error:", error.message);
       return res.status(401).json({ message: "Not authorized, token failed" });
     }
   }
 
-  if (!token) {
-    if (process.env.USE_LOCAL_DB === "true") {
-      req.user = await User.findOne({ role: "admin" }).select("-password");
-      if (req.user) {
-        return next();
-      }
-    }
-    return res.status(401).json({ message: "Not authorized, no token" });
-  }
+  return res.status(401).json({ message: "Not authorized, no token" });
 };
 
 const admin = (req, res, next) => {

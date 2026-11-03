@@ -49,6 +49,83 @@ if (isMockMode) {
   });
 }
 
+/**
+ * Authoritatively resolves product and price from database.
+ * Never trusts client-supplied price.
+ */
+const resolveItemPriceAndStock = (productDoc, rawItem = {}) => {
+  if (!productDoc) return { price: 0, availableStock: 0 };
+
+  let matchedVariant = null;
+
+  if (productDoc.variants && Array.isArray(productDoc.variants) && productDoc.variants.length > 0) {
+    // 1. Match by variant ID/sku/partNumber if provided
+    const targetVariantId = rawItem.variantId || rawItem.variant?._id || rawItem.variant;
+    const targetSku = rawItem.sku || rawItem.partNumber;
+
+    if (targetVariantId) {
+      matchedVariant = productDoc.variants.find(
+        (v) => v._id && v._id.toString() === targetVariantId.toString()
+      );
+    }
+
+    if (!matchedVariant && targetSku) {
+      matchedVariant = productDoc.variants.find(
+        (v) => (v.sku && v.sku === targetSku) || (v.partNumber && v.partNumber === targetSku)
+      );
+    }
+
+    // 2. Match by variant attributes: storage, color, size, ram, chip, etc.
+    if (!matchedVariant && (rawItem.storage || rawItem.color || rawItem.size || rawItem.ram || rawItem.chip)) {
+      matchedVariant = productDoc.variants.find((v) => {
+        let match = true;
+        if (rawItem.storage && v.storage) {
+          match = match && (String(v.storage).trim().toLowerCase() === String(rawItem.storage).trim().toLowerCase());
+        }
+        if (rawItem.color && v.color) {
+          match = match && (String(v.color).trim().toLowerCase() === String(rawItem.color).trim().toLowerCase());
+        }
+        if (rawItem.size && v.size) {
+          match = match && (String(v.size).trim().toLowerCase() === String(rawItem.size).trim().toLowerCase());
+        }
+        if (rawItem.ram && v.ram) {
+          match = match && (String(v.ram).trim().toLowerCase() === String(rawItem.ram).trim().toLowerCase());
+        }
+        if (rawItem.chip && v.chip) {
+          match = match && (String(v.chip).trim().toLowerCase() === String(rawItem.chip).trim().toLowerCase());
+        }
+        return match;
+      });
+    }
+  }
+
+  let finalPrice = 0;
+  let availableStock = typeof productDoc.stock === "number" ? productDoc.stock : 0;
+
+  if (matchedVariant) {
+    if (typeof matchedVariant.discountPrice === "number" && matchedVariant.discountPrice > 0) {
+      finalPrice = matchedVariant.discountPrice;
+    } else {
+      finalPrice = Number(matchedVariant.price || 0);
+    }
+    if (typeof matchedVariant.stock === "number") {
+      availableStock = matchedVariant.stock;
+    }
+  } else {
+    if (typeof productDoc.discountPrice === "number" && productDoc.discountPrice > 0) {
+      finalPrice = productDoc.discountPrice;
+    } else {
+      finalPrice = Number(productDoc.price || 0);
+    }
+  }
+
+  return {
+    price: Math.max(0, Number(finalPrice.toFixed(2))),
+    availableStock,
+    matchedVariant,
+  };
+};
+
 // Create Order (Protected)
 const createOrder = async (req, res) => {
   try {
@@ -66,73 +143,92 @@ const createOrder = async (req, res) => {
     }
 
     // Get user's cart items from DB or fallback to req.body.cartItems
-    let cartItems = await Cart.find({ user: userId }).populate("product");
-    if ((!cartItems || cartItems.length === 0) && req.body.cartItems && Array.isArray(req.body.cartItems) && req.body.cartItems.length > 0) {
-      const mongoose = require("mongoose");
-      const mapped = [];
-      for (const rawItem of req.body.cartItems) {
-        const prodId = rawItem.productId || (rawItem.id ? String(rawItem.id).split('-')[0] : (rawItem.product || rawItem._id));
-        let productDoc = null;
-        if (mongoose.Types.ObjectId.isValid(prodId)) {
-          productDoc = await Product.findById(prodId);
+    const cartItems = await Cart.find({ user: userId }).populate("product");
+    const mongoose = require("mongoose");
+    const resolvedItems = [];
+
+    if (cartItems && cartItems.length > 0) {
+      for (const item of cartItems) {
+        if (!item.product) {
+          return res.status(400).json({ message: "One of the products in your cart no longer exists" });
         }
-        mapped.push({
-          product: productDoc || {
-            _id: mongoose.Types.ObjectId.isValid(prodId) ? prodId : new mongoose.Types.ObjectId(),
-            title: rawItem.name || 'Product',
-            price: Number(rawItem.price || 0),
-            stock: 99
-          },
-          quantity: Number(rawItem.quantity || 1),
-          price: Number(rawItem.price || (productDoc ? productDoc.price : 0))
+        const { price, availableStock } = resolveItemPriceAndStock(item.product, item);
+        resolvedItems.push({
+          product: item.product,
+          quantity: Math.max(1, parseInt(item.quantity, 10) || 1),
+          price,
+          availableStock,
         });
       }
-      cartItems = mapped;
+    } else if (req.body.cartItems && Array.isArray(req.body.cartItems) && req.body.cartItems.length > 0) {
+      for (const rawItem of req.body.cartItems) {
+        const prodId = rawItem.productId || (rawItem.id ? String(rawItem.id).split("-")[0] : (rawItem.product || rawItem._id));
+        if (!prodId || !mongoose.Types.ObjectId.isValid(prodId)) {
+          return res.status(400).json({ message: "Invalid product identifier provided in checkout" });
+        }
+
+        const productDoc = await Product.findById(prodId);
+        if (!productDoc) {
+          return res.status(400).json({ message: `Product "${rawItem.name || prodId}" no longer exists or is unavailable` });
+        }
+
+        const quantity = Math.max(1, parseInt(rawItem.quantity, 10) || 1);
+        const { price, availableStock } = resolveItemPriceAndStock(productDoc, rawItem);
+
+        resolvedItems.push({
+          product: productDoc,
+          quantity,
+          price, // Authoritatively resolved from DB; client price ignored
+          availableStock,
+        });
+      }
     }
 
-    if (!cartItems || cartItems.length === 0) {
+    if (!resolvedItems || resolvedItems.length === 0) {
       return res.status(400).json({ message: "Cart is empty" });
     }
 
     // Validate product stock
-    for (const item of cartItems) {
-      if (!item.product) {
-        return res.status(400).json({ message: "One of the products in your cart no longer exists" });
-      }
-      if (item.product.stock !== undefined && item.product.stock < item.quantity) {
-        return res.status(400).json({ message: `Insufficient stock for product: ${item.product.title}. Only ${item.product.stock} left.` });
+    for (const item of resolvedItems) {
+      if (typeof item.availableStock === "number" && item.availableStock > 0 && item.availableStock < item.quantity) {
+        return res.status(400).json({
+          message: `Insufficient stock for product: ${item.product.title}. Only ${item.availableStock} left.`,
+        });
       }
     }
 
     // Deduct stock and increment sold count
-    for (const item of cartItems) {
+    for (const item of resolvedItems) {
       const product = item.product;
-      if (product && typeof product.save === 'function') {
-        product.stock = Math.max(0, (product.stock || 10) - item.quantity);
+      if (product && typeof product.save === "function") {
+        if (typeof product.stock === "number") {
+          product.stock = Math.max(0, product.stock - item.quantity);
+        }
         product.sold = (product.sold || 0) + item.quantity;
         await product.save();
       }
     }
 
-    // Map cart items to order items and calculate total amount
-    const orderItems = cartItems.map((item) => ({
+    // Map resolved items to order items with authoritative prices
+    const orderItems = resolvedItems.map((item) => ({
       product: item.product._id,
       quantity: item.quantity,
-      price: item.price !== undefined ? item.price : item.product.price,
+      price: item.price,
     }));
 
-    let totalAmount = cartItems.reduce((acc, curr) => acc + curr.quantity * (curr.price !== undefined ? curr.price : curr.product.price), 0);
+    let totalAmount = resolvedItems.reduce((acc, curr) => acc + curr.quantity * curr.price, 0);
+    totalAmount = Number(totalAmount.toFixed(2));
     let appliedDiscount = 0;
     let appliedCoupon = "";
 
     // Apply Coupon if provided
     if (couponCode) {
       const Coupon = require("../models/Coupon");
-      const coupon = await Coupon.findOne({ code: couponCode.toUpperCase() });
+      const coupon = await Coupon.findOne({ code: String(couponCode).toUpperCase() });
       if (coupon && new Date(coupon.expiryDate) >= new Date() && totalAmount >= coupon.minimumAmount) {
         appliedDiscount = Number(((totalAmount * coupon.discount) / 100).toFixed(2));
-        totalAmount = Number((totalAmount - appliedDiscount).toFixed(2));
-        appliedCoupon = couponCode.toUpperCase();
+        totalAmount = Number(Math.max(0, totalAmount - appliedDiscount).toFixed(2));
+        appliedCoupon = coupon.code;
       }
     }
 
@@ -152,13 +248,13 @@ const createOrder = async (req, res) => {
     // Create StockHistory logs
     try {
       const StockHistory = require("../models/StockHistory");
-      for (const item of cartItems) {
+      for (const item of resolvedItems) {
         await StockHistory.create({
           product: item.product._id,
-          oldStock: item.product.stock + item.quantity,
-          newStock: item.product.stock,
+          oldStock: (item.product.stock || 0) + item.quantity,
+          newStock: item.product.stock || 0,
           changeReason: `Order Placed (Order ID: #${order._id.toString().substring(0, 8).toUpperCase()})`,
-          updatedBy: userId
+          updatedBy: userId,
         });
       }
     } catch (historyErr) {
@@ -172,7 +268,7 @@ const createOrder = async (req, res) => {
     await order.populate([
       { path: "orderItems.product", select: "title price images brand" },
       { path: "shippingAddress" },
-      { path: "user", select: "name email phone" }
+      { path: "user", select: "name email phone" },
     ]);
 
     const orderObj = order.toObject();
@@ -201,11 +297,15 @@ const createOrder = async (req, res) => {
         };
       } catch (err) {
         // Rollback stock deduction
-        for (const item of cartItems) {
+        for (const item of resolvedItems) {
           const product = item.product;
-          product.stock += item.quantity;
-          product.sold = Math.max(0, product.sold - item.quantity);
-          await product.save();
+          if (product && typeof product.save === "function") {
+            if (typeof product.stock === "number") {
+              product.stock += item.quantity;
+            }
+            product.sold = Math.max(0, (product.sold || 0) - item.quantity);
+            await product.save();
+          }
         }
         await Order.findByIdAndDelete(order._id);
         return res.status(500).json({ message: "Failed to create payment order: " + err.message });
@@ -335,6 +435,10 @@ const adminGetOrders = async (req, res) => {
 // Update Order Status (Admin only)
 const adminUpdateStatus = async (req, res) => {
   try {
+    if (!req.user || req.user.role !== "admin") {
+      return res.status(403).json({ message: "Not authorized as an admin" });
+    }
+
     const orderId = req.params.id;
     const { orderStatus } = req.body;
 
@@ -552,6 +656,10 @@ const adminGetReturns = async (req, res) => {
 // Update Return Request Status (Admin only)
 const adminUpdateReturnStatus = async (req, res) => {
   try {
+    if (!req.user || req.user.role !== "admin") {
+      return res.status(403).json({ message: "Not authorized as an admin" });
+    }
+
     const { status } = req.body; // Approved, Rejected, Refunded
     const returnId = req.params.id;
 

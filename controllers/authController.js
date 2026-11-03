@@ -65,21 +65,43 @@ const register = async (req, res) => {
   }
 };
 
-// Login user
+// Login user (supports email or username)
 const login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, username, password } = req.body;
+    const identifier = (email || username || "").trim();
 
-    const cleanEmail = (email || "").toLowerCase().trim();
-    const user = await User.findOne({ email: cleanEmail });
+    if (!identifier || !password) {
+      return res.status(400).json({ message: "Email or username and password are required" });
+    }
+
+    const cleanLower = identifier.toLowerCase();
+
+    // 1. Direct email match
+    let user = await User.findOne({ email: cleanLower });
+
+    // 2. If 'admin' or 'system admin', alias to primary admin account
+    if (!user && (cleanLower === 'admin' || cleanLower === 'system admin')) {
+      user = await User.findOne({ email: 'admin@iincept.com' });
+    }
+
+    // 3. Match by name (case-insensitive), prioritizing admin users
     if (!user) {
-      return res.status(401).json({ message: "Invalid email or password" });
+      const escaped = cleanLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const candidates = await User.find({ name: new RegExp(`^${escaped}$`, "i") });
+      if (candidates && candidates.length > 0) {
+        user = candidates.find(u => u.role === 'admin') || candidates[0];
+      }
+    }
+
+    if (!user) {
+      return res.status(401).json({ message: "Invalid email/username or password" });
     }
 
     // Compare password
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
-      return res.status(401).json({ message: "Invalid email or password" });
+      return res.status(401).json({ message: "Invalid email/username or password" });
     }
 
     res.json({
@@ -204,24 +226,52 @@ const forgotPassword = async (req, res) => {
       return res.status(400).json({ message: "Email is required" });
     }
 
-    const user = await User.findOne({ email: email.toLowerCase() });
+    const cleanEmail = String(email).trim().toLowerCase();
+    const user = await User.findOne({ email: cleanEmail });
+
+    // Anti-user enumeration: Return identical generic message whether account exists or not
     if (!user) {
-      return res.status(404).json({ message: "User with this email does not exist" });
+      return res.status(200).json({
+        success: true,
+        message: "If an account with that email exists, a password reset link has been sent.",
+      });
     }
 
-    // Generate random token
+    // Generate cryptographically secure random token (32 bytes = 64 hex characters)
     const crypto = require("crypto");
-    const token = crypto.randomBytes(20).toString("hex");
+    const token = crypto.randomBytes(32).toString("hex");
 
-    // Hash token and set expiry
+    // Hash token with SHA-256 and store expiration (30 minutes)
     const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
     user.resetPasswordToken = hashedToken;
     user.resetPasswordExpire = Date.now() + 30 * 60 * 1000; // 30 minutes
     await user.save();
 
-    res.status(200).json({
-      message: "Reset token generated successfully (simulated)",
-      token: token,
+    // Dispatch reset URL via notification service (SMTP or simulated email)
+    try {
+      const { dispatchEmail } = require("../services/notificationService");
+      const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
+      const resetUrl = `${clientUrl}/reset-password?token=${token}`;
+      const emailContent = `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e5e7eb; border-radius: 8px;">
+          <h2 style="color: #111827;">Password Reset Request</h2>
+          <p style="color: #4b5563;">Hello ${user.name || "Customer"},</p>
+          <p style="color: #4b5563;">You requested a password reset for your account. Click the link below to set a new password. This link is valid for 30 minutes:</p>
+          <div style="margin: 24px 0;">
+            <a href="${resetUrl}" style="background-color: #0071e3; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 500; display: inline-block;">Reset Password</a>
+          </div>
+          <p style="color: #6b7280; font-size: 13px;">If you did not request this, please ignore this email and your password will remain unchanged.</p>
+        </div>
+      `;
+      await dispatchEmail(user.email, "Password Reset Request - iiNCEPT Store", emailContent);
+    } catch (emailErr) {
+      console.error("Failed to dispatch password reset email:", emailErr.message);
+    }
+
+    // Return generic success response WITHOUT token
+    return res.status(200).json({
+      success: true,
+      message: "If an account with that email exists, a password reset link has been sent.",
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -257,7 +307,7 @@ const resetPassword = async (req, res) => {
     user.resetPasswordExpire = undefined;
     await user.save();
 
-    res.status(200).json({ message: "Password reset successful" });
+    res.status(200).json({ success: true, message: "Password reset successful" });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

@@ -36,7 +36,7 @@ const getSettings = async (req, res) => {
         { name: 'iPad', label: 'iPad', image: DEFAULT_CATEGORY_IMAGES['iPad'], path: '/ipad', isActive: true },
         { name: 'Watch', label: 'Watch', image: DEFAULT_CATEGORY_IMAGES['Watch'], path: '/watch', isActive: true },
         { name: 'AirPods', label: 'AirPods', image: DEFAULT_CATEGORY_IMAGES['AirPods'], path: '/airpods', isActive: true },
-        { name: 'AirTag', label: 'AirTag', image: DEFAULT_CATEGORY_IMAGES['AirTag'], path: '/airtag', isActive: true },
+        { name: 'AirTag', label: 'AirTag', image: DEFAULT_CATEGORY_IMAGES['AirTag'], path: '/accessories', isActive: true },
         { name: 'Apple TV 4K', label: 'Apple TV 4K', image: DEFAULT_CATEGORY_IMAGES['Apple TV 4K'], path: '/tv-home', isActive: true },
         { name: 'HomePod', label: 'HomePod', image: DEFAULT_CATEGORY_IMAGES['HomePod'], path: '/tv-home?search=HomePod', isActive: true },
         { name: 'Accessories', label: 'Accessories', image: DEFAULT_CATEGORY_IMAGES['Accessories'], path: '/accessories', isActive: true },
@@ -61,13 +61,18 @@ const getSettings = async (req, res) => {
         const key = obj.name || obj.label;
         const currentImg = (obj.image || '').trim();
 
+        if ((key || '').toLowerCase().includes('airtag') && obj.path !== '/accessories') {
+          updated = true;
+          obj = { ...obj, path: '/accessories' };
+        }
+
         if (!currentImg || currentImg.includes('…') || currentImg.includes('traceId') || currentImg.startsWith('*') || currentImg.includes('/category_strip/')) {
           if (DEFAULT_CATEGORY_IMAGES[key]) {
             updated = true;
             return { ...obj, image: DEFAULT_CATEGORY_IMAGES[key] };
           }
         }
-        return item;
+        return obj;
       });
       if (updated) {
         settings.markModified('homeCategoryIcons');
@@ -190,24 +195,12 @@ const getSettings = async (req, res) => {
         { name: 'TV & Home', actionText: 'Shop all models →', link: '/tv-home', image: 'https://i3-prod-assets.indiaistore.com/files/uploads/categories/tv/home-img-1694070636_757.png', cardTheme: 'light', isActive: true },
         { name: 'Accessories', actionText: 'Shop all models →', link: '/accessories', image: 'https://i3-prod-assets.indiaistore.com/files/uploads/categories/beats-by-dr-dre/home-img-1725349599_8443.jpg', cardTheme: 'dark', isActive: true },
         { name: 'AppleCare+', actionText: 'Explore coverage →', link: '/applecare', image: '/applecare_official_hero.png', cardTheme: 'dark', isActive: true },
-        { name: 'New Arrivals', actionText: 'Explore latest releases →', link: '/shop?sort=newest', image: '', cardTheme: 'dark', isActive: true },
       ];
       await settings.save();
     }
 
     if (!settings.navbarMenuItems || settings.navbarMenuItems.length === 0) {
       settings.navbarMenuItems = [
-        {
-          name: 'New Arrivals',
-          link: '/shop?sort=newest',
-          isActive: true,
-          dropdownItems: [
-            { label: 'Explore New Arrivals', path: '/shop?sort=newest', query: 'New Arrivals', image: '/iphone_category_v2.jpg', price: 'New Releases', isActive: true },
-            { label: 'iPhone 17 Series', path: '/iphone', query: 'iPhone 17', image: '/iphone17p_orange.jpg', price: 'From ₹79,900', isActive: true },
-            { label: 'MacBook M4 Series', path: '/macbook', query: 'MacBook Pro', image: '/mac_nav/macbook_pro.png', price: 'From ₹1,69,900', isActive: true },
-            { label: 'Apple Watch Series 10', path: '/watch', query: 'Series 10', image: '/watch_category_uploaded.png', price: 'From ₹46,900', isActive: true },
-          ]
-        },
         {
           name: 'Mac',
           link: '/macbook',
