@@ -22,6 +22,14 @@ const orderSchema = new mongoose.Schema(
           type: Number,
           required: true,
         },
+        variantId: {
+          type: mongoose.Schema.Types.ObjectId,
+          default: null,
+        },
+        variant: {
+          type: mongoose.Schema.Types.Mixed,
+          default: null,
+        },
       },
     ],
     shippingAddress: {
@@ -55,8 +63,21 @@ const orderSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    razorpayOrderId: {
+      type: String,
+      default: "",
+    },
+    razorpayPaymentId: {
+      type: String,
+      default: "",
+    },
+    razorpaySignature: {
+      type: String,
+      default: "",
+    },
   },
   { timestamps: true }
 );
 
 module.exports = mongoose.model("Order", orderSchema);
+

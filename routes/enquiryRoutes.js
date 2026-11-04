@@ -7,9 +7,11 @@ const {
   adminDeleteEnquiry,
 } = require("../controllers/enquiryController");
 const { protect, admin } = require("../middleware/authMiddleware");
+const { reviewLimiter } = require("../middleware/rateLimiter");
+const { validate, enquirySchema } = require("../middleware/validate");
 
 // Public route for customers to submit bulk enquiries
-router.post("/", createEnquiry);
+router.post("/", reviewLimiter, validate(enquirySchema), createEnquiry);
 
 // Protected routes for administrator panel
 router.get("/admin", protect, admin, adminGetEnquiries);

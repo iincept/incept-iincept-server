@@ -1,4 +1,5 @@
 const Enquiry = require("../models/Enquiry");
+const mongoose = require("mongoose");
 
 // Submit a new bulk business enquiry
 const createEnquiry = async (req, res) => {
@@ -19,12 +20,18 @@ const createEnquiry = async (req, res) => {
       return res.status(400).json({ message: "Please fill all required fields" });
     }
 
+    const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(cleanEmail)) {
+      return res.status(400).json({ message: "Invalid email format" });
+    }
+
     const enquiry = await Enquiry.create({
-      fullName,
-      companyName,
-      email,
-      phone,
-      gstin,
+      fullName: typeof fullName === "string" ? fullName.trim() : fullName,
+      companyName: typeof companyName === "string" ? companyName.trim() : companyName,
+      email: cleanEmail,
+      phone: typeof phone === "string" ? phone.trim() : phone,
+      gstin: typeof gstin === "string" ? gstin.trim() : gstin,
       productInterest,
       quantity,
       targetPrice,
@@ -57,6 +64,10 @@ const adminUpdateEnquiryStatus = async (req, res) => {
       return res.status(400).json({ message: "Status value is required" });
     }
 
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid enquiry identifier format" });
+    }
+
     const enquiry = await Enquiry.findById(id);
     if (!enquiry) {
       return res.status(404).json({ message: "Enquiry not found" });
@@ -75,6 +86,10 @@ const adminUpdateEnquiryStatus = async (req, res) => {
 const adminDeleteEnquiry = async (req, res) => {
   try {
     const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid enquiry identifier format" });
+    }
 
     const enquiry = await Enquiry.findByIdAndDelete(id);
     if (!enquiry) {

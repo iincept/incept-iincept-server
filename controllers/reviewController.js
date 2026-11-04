@@ -1,5 +1,6 @@
 const Review = require("../models/Review");
 const Product = require("../models/Product");
+const mongoose = require("mongoose");
 
 // Helper to update product average rating
 const updateProductAverageRating = async (productId) => {
@@ -21,6 +22,10 @@ const addReview = async (req, res) => {
 
     if (!productId || rating === undefined) {
       return res.status(400).json({ message: "Product ID and rating are required" });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(productId)) {
+      return res.status(400).json({ message: "Invalid product identifier format" });
     }
 
     if (rating < 1 || rating > 5) {
@@ -64,6 +69,10 @@ const deleteReview = async (req, res) => {
     const reviewId = req.params.id;
     const userId = req.user._id;
 
+    if (!mongoose.Types.ObjectId.isValid(reviewId)) {
+      return res.status(400).json({ message: "Invalid review identifier format" });
+    }
+
     const review = await Review.findById(reviewId);
     if (!review) {
       return res.status(404).json({ message: "Review not found" });
@@ -91,8 +100,13 @@ const deleteReview = async (req, res) => {
 const getProductReviews = async (req, res) => {
   try {
     const { productId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(productId)) {
+      return res.status(200).json([]);
+    }
+
     const reviews = await Review.find({ product: productId })
-      .populate("user", "name avatar email")
+      .populate("user", "name avatar")
       .sort({ createdAt: -1 });
 
     const Order = require("../models/Order");

@@ -12,13 +12,21 @@ const {
   resetPassword,
 } = require("../controllers/authController");
 const { protect, admin } = require("../middleware/authMiddleware");
+const { authLimiter, passwordResetLimiter } = require("../middleware/rateLimiter");
+const {
+  validate,
+  registerSchema,
+  loginSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
+} = require("../middleware/validate");
 
-// Public routes
-router.post("/register", register);
-router.post("/login", login);
+// Public routes with rate limiting and schema validation
+router.post("/register", authLimiter, validate(registerSchema), register);
+router.post("/login", authLimiter, validate(loginSchema), login);
 router.post("/logout", logout);
-router.post("/forgot-password", forgotPassword);
-router.post("/reset-password", resetPassword);
+router.post("/forgot-password", passwordResetLimiter, validate(forgotPasswordSchema), forgotPassword);
+router.post("/reset-password", passwordResetLimiter, validate(resetPasswordSchema), resetPassword);
 
 // Protected routes
 router.get("/profile", protect, getProfile);

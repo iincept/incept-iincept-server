@@ -8,27 +8,75 @@ const connectDB = require("./config/db");
 
 connectDB();
 
+const helmet = require("helmet");
+const { apiLimiter } = require("./middleware/rateLimiter");
+const { notFound, errorHandler } = require("./middleware/errorMiddleware");
+
 const app = express();
 
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ limit: "50mb", extended: true }));
-
-const allowedOrigins = process.env.NODE_ENV === "production"
-  ? [process.env.FRONTEND_URL].filter(Boolean)
-  : [
-      process.env.FRONTEND_URL,
-      "http://localhost:5173",
-      "http://localhost:3000",
-      "http://localhost:5174",
-      "http://localhost:5175",
-    ].filter(Boolean);
-
+// 1. Helmet Security Headers
 app.use(
-  cors({
-    origin: true,
-    credentials: true,
+  helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    contentSecurityPolicy: false,
   })
 );
+
+// 2. Reasonable JSON and URL-encoded body limits (prevent memory exhaustion DoS)
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ limit: "10mb", extended: true }));
+
+// 3. Strict CORS Configuration
+const getAllowedOrigins = () => {
+  const configuredOrigins = [
+    process.env.FRONTEND_URL,
+    process.env.CLIENT_URL,
+    process.env.ADMIN_URL,
+    ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(",") : []),
+  ]
+    .map((url) => (url ? url.trim() : ""))
+    .filter(Boolean);
+
+  if (process.env.NODE_ENV !== "production") {
+    const devOrigins = [
+      "http://localhost:5173",
+      "http://localhost:5174",
+      "http://localhost:3000",
+      "http://localhost:5175",
+      "http://127.0.0.1:5173",
+      "http://127.0.0.1:5174",
+      "http://127.0.0.1:3000",
+      "http://127.0.0.1:5175",
+    ];
+    return Array.from(new Set([...configuredOrigins, ...devOrigins]));
+  }
+
+  return Array.from(new Set(configuredOrigins));
+};
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow server-to-server, curl, Postman, mobile, or requests with no origin
+    if (!origin) return callback(null, true);
+
+    const allowedOrigins = getAllowedOrigins();
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      return callback(new Error(`CORS blocked: Origin ${origin} is not allowed`));
+    }
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+  exposedHeaders: ["RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset"],
+  maxAge: 86400,
+};
+
+app.use(cors(corsOptions));
+
+// 4. Global API Rate Limiter
+app.use("/api", apiLimiter);
 
 app.use("/uploads", express.static(path.join(__dirname, "../client/public/uploads")));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
@@ -47,6 +95,7 @@ const reviewRoutes = require("./routes/reviewRoutes");
 const uploadRoutes = require("./routes/uploadRoutes");
 const settingRoutes = require("./routes/settingRoutes");
 const enquiryRoutes = require("./routes/enquiryRoutes");
+
 app.use("/api/auth", authRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/products", productRoutes);
@@ -59,6 +108,10 @@ app.use("/api/reviews", reviewRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api/settings", settingRoutes);
 app.use("/api/enquiries", enquiryRoutes);
+
+// 5. Centralized Error Handling
+app.use(notFound);
+app.use(errorHandler);
 
 if (require.main === module) {
   const PORT = process.env.PORT || 5088;

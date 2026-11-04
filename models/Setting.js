@@ -12,7 +12,7 @@ const settingSchema = new mongoose.Schema(
     },
     businessPhone: {
       type: String,
-      default: "+91 99999 99999",
+      default: "+91 99710 02348",
     },
     supportHours: {
       type: String,

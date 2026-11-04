@@ -14,6 +14,7 @@ const {
   adminGetSalesReport,
 } = require("../controllers/orderController");
 const { protect, admin } = require("../middleware/authMiddleware");
+const { orderLimiter } = require("../middleware/rateLimiter");
 
 // All routes require authentication
 router.use(protect);
@@ -25,7 +26,7 @@ router.get("/razorpay-key", (req, res) => {
 // User endpoints
 router.route("/")
   .get(getOrders)
-  .post(createOrder);
+  .post(orderLimiter, createOrder);
 
 router.post("/verify", verifyPayment);
 

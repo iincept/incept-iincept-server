@@ -5,8 +5,8 @@ const getSettings = async (req, res) => {
   try {
     let settings = await Setting.findOne();
     if (!settings) {
-      // Create default settings if not exists
-      settings = await Setting.create({});
+      // Return default settings without mutating database
+      settings = new Setting({});
     }
 
     if (!settings.homeHeroBadge) settings.homeHeroBadge = "Apple Authorised Resellers across India";
@@ -41,7 +41,6 @@ const getSettings = async (req, res) => {
         { name: 'HomePod', label: 'HomePod', image: DEFAULT_CATEGORY_IMAGES['HomePod'], path: '/tv-home?search=HomePod', isActive: true },
         { name: 'Accessories', label: 'Accessories', image: DEFAULT_CATEGORY_IMAGES['Accessories'], path: '/accessories', isActive: true },
       ];
-      await settings.save();
     } else {
       // Update existing category icons if using old/broken images or local fallback paths
       let updated = false;
@@ -76,7 +75,6 @@ const getSettings = async (req, res) => {
       });
       if (updated) {
         settings.markModified('homeCategoryIcons');
-        await settings.save();
       }
     }
 
@@ -91,7 +89,6 @@ const getSettings = async (req, res) => {
     if (!settings.homeNewArrivals || settings.homeNewArrivals.length === 0) {
       settings.homeNewArrivals = defaultArrivals;
       settings.markModified('homeNewArrivals');
-      await settings.save();
     }
 
     const defaultDealBanners = [
@@ -132,7 +129,6 @@ const getSettings = async (req, res) => {
     if (!settings.homeDealBanners || settings.homeDealBanners.length === 0) {
       settings.homeDealBanners = defaultDealBanners;
       settings.markModified('homeDealBanners');
-      await settings.save();
     }
 
     if (!settings.heroSlides || settings.heroSlides.length === 0) {
@@ -182,7 +178,6 @@ const getSettings = async (req, res) => {
           isActive: true,
         },
       ];
-      await settings.save();
     }
 
     if (!settings.appleCategories || settings.appleCategories.length === 0) {
@@ -196,7 +191,6 @@ const getSettings = async (req, res) => {
         { name: 'Accessories', actionText: 'Shop all models →', link: '/accessories', image: 'https://i3-prod-assets.indiaistore.com/files/uploads/categories/beats-by-dr-dre/home-img-1725349599_8443.jpg', cardTheme: 'dark', isActive: true },
         { name: 'AppleCare+', actionText: 'Explore coverage →', link: '/applecare', image: '/applecare_official_hero.png', cardTheme: 'dark', isActive: true },
       ];
-      await settings.save();
     }
 
     if (!settings.navbarMenuItems || settings.navbarMenuItems.length === 0) {
@@ -307,7 +301,6 @@ const getSettings = async (req, res) => {
           ]
         }
       ];
-      await settings.save();
     }
 
     // Ensure Accessories has dropdownItems if it exists and has 0 sub-items
@@ -323,7 +316,6 @@ const getSettings = async (req, res) => {
           { label: 'AirPods Accessories', path: '/accessories?product=airpods', query: 'AirPods', image: '/airpods_category_uploaded.png', price: 'Cases & Lanyards', isActive: true },
           { label: 'TV & Home Accessories', path: '/accessories?product=tv-home', query: 'TV & Home', image: '/tvhome_category_uploaded.png', price: 'Remotes & Mounts', isActive: true }
         ];
-        await settings.save();
       }
     }
 
@@ -373,7 +365,6 @@ const getSettings = async (req, res) => {
           ]
         }
       ];
-      await settings.save();
     }
 
     if (!settings.appleCarePlans || settings.appleCarePlans.length === 0) {
@@ -468,7 +459,6 @@ const getSettings = async (req, res) => {
           isActive: true
         }
       ];
-      await settings.save();
     }
 
     // Seed appleCarePricingTables defaults if not set
@@ -618,14 +608,12 @@ const getSettings = async (req, res) => {
           ]
         }
       ];
-      await settings.save();
     } else if (settings.appleCarePricingTables && settings.appleCarePricingTables.length > 0) {
       const macTbl = settings.appleCarePricingTables.find(t => t.categoryKey === 'mac');
       if (macTbl && macTbl.rows) {
         const hasNeo = macTbl.rows.some(r => (r.model || '').toLowerCase().includes('neo'));
         if (!hasNeo) {
           macTbl.rows.splice(3, 0, { model: 'Macbook Neo', monthly: '₹579.00', yearly: '₹16,900.00', isActive: true, image: '/mac_nav/macbook_neo.png' });
-          await settings.save();
         }
       }
     }
@@ -639,6 +627,10 @@ const getSettings = async (req, res) => {
 // Update site settings (Admin only)
 const updateSettings = async (req, res) => {
   try {
+    if (!req.user || req.user.role !== "admin") {
+      return res.status(403).json({ message: "Not authorized as an admin" });
+    }
+
     let settings = await Setting.findOne();
     if (!settings) {
       settings = new Setting({});
@@ -720,7 +712,6 @@ const updateSettings = async (req, res) => {
           }
         ]
       };
-      await settings.save();
     }
 
     if (settings.productAppleCare && (!settings.productAppleCare.plans || settings.productAppleCare.plans.length === 0)) {
@@ -742,7 +733,6 @@ const updateSettings = async (req, res) => {
           isActive: true
         }
       ];
-      await settings.save();
     }
 
     const {

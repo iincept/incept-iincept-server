@@ -18,10 +18,13 @@ const addToCart = async (req, res) => {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    // Only block if stock is explicitly configured (> 0) and less than requested quantity.
-    // stock=0 means 'not explicitly set' in this ordering system — treat as available.
-    if (product.stock > 0 && product.stock < quantity) {
-      return res.status(400).json({ message: `Insufficient stock. Only ${product.stock} available.` });
+    // Strictly validate stock (reject if out of stock or requested quantity exceeds available stock)
+    const availableStock = typeof product.stock === "number" ? product.stock : 0;
+    if (availableStock <= 0) {
+      return res.status(400).json({ message: "Product is out of stock" });
+    }
+    if (quantity > availableStock) {
+      return res.status(400).json({ message: `Insufficient stock. Only ${availableStock} available.` });
     }
 
     // Check if item is already in user's cart
@@ -30,8 +33,8 @@ const addToCart = async (req, res) => {
     if (cartItem) {
       // Check if updating quantity exceeds stock
       const newQuantity = cartItem.quantity + Number(quantity);
-      if (product.stock > 0 && product.stock < newQuantity) {
-        return res.status(400).json({ message: `Insufficient stock. Cannot add. Only ${product.stock} available.` });
+      if (newQuantity > availableStock) {
+        return res.status(400).json({ message: `Insufficient stock. Cannot add. Only ${availableStock} available.` });
       }
       cartItem.quantity = newQuantity;
       await cartItem.save();
@@ -69,8 +72,12 @@ const updateQuantity = async (req, res) => {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    if (product.stock > 0 && product.stock < Number(quantity)) {
-      return res.status(400).json({ message: `Insufficient stock. Only ${product.stock} available.` });
+    const availableStock = typeof product.stock === "number" ? product.stock : 0;
+    if (availableStock <= 0) {
+      return res.status(400).json({ message: "Product is out of stock" });
+    }
+    if (availableStock < Number(quantity)) {
+      return res.status(400).json({ message: `Insufficient stock. Only ${availableStock} available.` });
     }
 
     // Find and update the cart item
@@ -148,18 +155,23 @@ const mergeCart = async (req, res) => {
       const product = await Product.findById(productId);
       if (!product) continue;
 
+      const availableStock = typeof product.stock === "number" ? product.stock : 0;
+      if (availableStock <= 0) continue; // Skip out-of-stock products during merge
+
       let cartItem = await Cart.findOne({ user: userId, product: productId });
       if (cartItem) {
-        const newQuantity = Math.min(product.stock, cartItem.quantity + quantity);
+        const newQuantity = Math.min(availableStock, cartItem.quantity + quantity);
         cartItem.quantity = newQuantity;
         await cartItem.save();
       } else {
-        const newQuantity = Math.min(product.stock, quantity);
-        await Cart.create({
-          user: userId,
-          product: productId,
-          quantity: newQuantity,
-        });
+        const newQuantity = Math.min(availableStock, quantity);
+        if (newQuantity > 0) {
+          await Cart.create({
+            user: userId,
+            product: productId,
+            quantity: newQuantity,
+          });
+        }
       }
     }
 

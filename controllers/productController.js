@@ -1,7 +1,13 @@
 const Product = require("../models/Product");
 const Category = require("../models/Category");
-const XLSX = require("xlsx");
+const ExcelJS = require("exceljs");
 const { resolveColorHex, isValidHex, normalizeHex } = require("../utils/colorResolver");
+
+// Escape user input before using in MongoDB regex queries to prevent Regex Injection & ReDoS
+const escapeRegex = (str) => {
+  if (typeof str !== "string") return "";
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+};
 
 const sanitizeVariants = (variants) => {
   if (!Array.isArray(variants)) return [];
@@ -454,11 +460,14 @@ const getProducts = async (req, res) => {
     let query = {};
 
     // 1. Search Filter (title, description, brand, sku, partNumber, modelNumber, variants)
-    if (search) {
+    if (search && typeof search === "string" && search.trim()) {
       const cleanSearch = search.trim();
-      const normSearch = cleanSearch.replace(/^i(?=[a-z])/i, '');
-      const searchRegex = { $regex: cleanSearch, $options: "i" };
-      const normRegex = { $regex: normSearch, $options: "i" };
+      const escapedSearch = escapeRegex(cleanSearch);
+      const normSearch = cleanSearch.replace(/^i(?=[a-z])/i, "");
+      const escapedNormSearch = escapeRegex(normSearch);
+
+      const searchRegex = { $regex: escapedSearch, $options: "i" };
+      const normRegex = { $regex: escapedNormSearch, $options: "i" };
       query.$or = [
         { title: searchRegex },
         { title: normRegex },
@@ -587,7 +596,8 @@ const getProductById = async (req, res) => {
       if (!product) {
         // Fallback: try searching case-insensitively by title using slugified mock ID
         const slug = productId.replace(/[_-]/g, ' ');
-        product = await Product.findOne({ title: { $regex: new RegExp(slug, 'i') } }).populate("category", "name slug");
+        const escapedSlug = escapeRegex(slug);
+        product = await Product.findOne({ title: { $regex: new RegExp(escapedSlug, 'i') } }).populate("category", "name slug");
       }
     }
 
@@ -634,7 +644,8 @@ const getCategoryIdsByKey = async (key) => {
   } else if (k === 'tv-home' || k === 'tv') {
     query = { $or: [{ slug: /tv|home/i }, { name: /tv|home/i }] };
   } else {
-    query = { $or: [{ slug: new RegExp(k, 'i') }, { name: new RegExp(k, 'i') }] };
+    const escapedK = escapeRegex(k);
+    query = { $or: [{ slug: new RegExp(escapedK, 'i') }, { name: new RegExp(escapedK, 'i') }] };
   }
   const cats = await Category.find(query);
   return cats.map(c => c._id);
@@ -736,7 +747,11 @@ const exportProductsExcel = async (req, res) => {
       }
     });
 
-    const worksheet = XLSX.utils.json_to_sheet(
+    const workbook = new ExcelJS.Workbook();
+    const sheetName = category.toUpperCase().slice(0, 31);
+    const worksheet = workbook.addWorksheet(sheetName);
+
+    const exportRows =
       rows.length > 0
         ? rows
         : [
@@ -760,14 +775,20 @@ const exportProductsExcel = async (req, res) => {
               Description: "Sample Apple Product description",
               Images: "/sample_image.png",
             },
-          ]
-    );
+          ];
 
-    const workbook = XLSX.utils.book_new();
-    const sheetName = category.toUpperCase().slice(0, 31);
-    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+    const columnKeys = Object.keys(exportRows[0]);
+    worksheet.columns = columnKeys.map((key) => ({
+      header: key,
+      key: key,
+      width: Math.max(15, key.length + 3),
+    }));
 
-    const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+    exportRows.forEach((r) => {
+      worksheet.addRow(r);
+    });
+
+    const buffer = await workbook.xlsx.writeBuffer();
 
     res.setHeader(
       "Content-Type",
@@ -777,11 +798,89 @@ const exportProductsExcel = async (req, res) => {
       "Content-Disposition",
       `attachment; filename="${category.toLowerCase()}_products.xlsx"`
     );
-    return res.send(buffer);
+    return res.send(Buffer.from(buffer));
   } catch (error) {
     console.error("Export Excel error:", error);
     res.status(500).json({ message: error.message });
   }
+};
+
+// Safe helper to parse rows from uploaded spreadsheet buffer (.xlsx, .xls, .csv)
+const parseSpreadsheetBuffer = async (fileBuffer, originalname = "") => {
+  if (!fileBuffer || !Buffer.isBuffer(fileBuffer) || fileBuffer.length === 0) {
+    throw new Error("No Excel file uploaded or file is empty");
+  }
+
+  const path = require("path");
+  const ext = path.extname(originalname || "").toLowerCase();
+  const workbook = new ExcelJS.Workbook();
+
+  if (ext === ".csv") {
+    const { Readable } = require("stream");
+    const stream = Readable.from(fileBuffer);
+    await workbook.csv.read(stream);
+  } else {
+    await workbook.xlsx.load(fileBuffer);
+  }
+
+  const worksheet = workbook.worksheets[0];
+  if (!worksheet || worksheet.rowCount === 0) {
+    return [];
+  }
+
+  const headers = [];
+  const headerRow = worksheet.getRow(1);
+  headerRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+    let headerText = "";
+    if (cell.value && typeof cell.value === "object") {
+      headerText = cell.value.text || cell.value.result || "";
+    } else {
+      headerText = cell.value !== undefined && cell.value !== null ? String(cell.value) : "";
+    }
+    headers[colNumber] = headerText.trim();
+  });
+
+  const validHeaders = headers.filter(Boolean);
+  if (validHeaders.length === 0) {
+    return [];
+  }
+
+  const rows = [];
+  worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+    if (rowNumber === 1) return; // Skip header row
+    const rowObj = {};
+    let hasData = false;
+
+    row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      const headerKey = headers[colNumber];
+      if (!headerKey) return;
+
+      let cellVal = cell.value;
+      if (cellVal !== undefined && cellVal !== null) {
+        if (typeof cellVal === "object") {
+          if (cellVal.result !== undefined) {
+            cellVal = cellVal.result;
+          } else if (cellVal.text !== undefined) {
+            cellVal = cellVal.text;
+          } else if (cellVal.richText && Array.isArray(cellVal.richText)) {
+            cellVal = cellVal.richText.map((t) => t.text || "").join("");
+          }
+        }
+        if (String(cellVal).trim() !== "") {
+          hasData = true;
+        }
+        rowObj[headerKey] = cellVal;
+      } else {
+        rowObj[headerKey] = "";
+      }
+    });
+
+    if (hasData) {
+      rows.push(rowObj);
+    }
+  });
+
+  return rows;
 };
 
 // Preview Products from Excel upload
@@ -791,9 +890,7 @@ const previewImportProductsExcel = async (req, res) => {
       return res.status(400).json({ message: "No Excel file uploaded" });
     }
     const { category = "all" } = req.query;
-    const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
-    const sheetName = workbook.SheetNames[0];
-    const rawRows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
+    const rawRows = await parseSpreadsheetBuffer(req.file.buffer, req.file.originalname);
 
     if (!rawRows || rawRows.length === 0) {
       return res.status(400).json({ message: "Excel sheet is empty" });
@@ -858,9 +955,7 @@ const importProductsExcel = async (req, res) => {
       return res.status(400).json({ message: "No Excel file uploaded" });
     }
     const { category = "all" } = req.query;
-    const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
-    const sheetName = workbook.SheetNames[0];
-    const rawRows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
+    const rawRows = await parseSpreadsheetBuffer(req.file.buffer, req.file.originalname);
 
     if (!rawRows || rawRows.length === 0) {
       return res.status(400).json({ message: "Excel sheet is empty" });

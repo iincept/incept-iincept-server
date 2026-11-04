@@ -1,4 +1,5 @@
 const Address = require("../models/Address");
+const mongoose = require("mongoose");
 
 // Add Address (Protected)
 const addAddress = async (req, res) => {
@@ -37,6 +38,11 @@ const updateAddress = async (req, res) => {
   try {
     const addressId = req.params.id;
     const userId = req.user._id;
+
+    if (!mongoose.Types.ObjectId.isValid(addressId)) {
+      return res.status(400).json({ message: "Invalid address identifier format" });
+    }
+
     const { fullName, phone, address, city, state, pincode, isDefault } = req.body;
 
     const existingAddress = await Address.findOne({ _id: addressId, user: userId });
@@ -71,6 +77,10 @@ const deleteAddress = async (req, res) => {
   try {
     const addressId = req.params.id;
     const userId = req.user._id;
+
+    if (!mongoose.Types.ObjectId.isValid(addressId)) {
+      return res.status(400).json({ message: "Invalid address identifier format" });
+    }
 
     const address = await Address.findOne({ _id: addressId, user: userId });
     if (!address) {

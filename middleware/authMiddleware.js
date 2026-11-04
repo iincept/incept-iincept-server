@@ -6,23 +6,33 @@ const protect = async (req, res, next) => {
 
   if (
     req.headers.authorization &&
-    req.headers.authorization.startsWith("Bearer")
+    req.headers.authorization.startsWith("Bearer ")
   ) {
     try {
-      // Get token from header
+      // Extract and validate token string from header
       token = req.headers.authorization.split(" ")[1];
+      if (!token || typeof token !== "string" || token.trim() === "") {
+        return res.status(401).json({ message: "Not authorized, invalid token format" });
+      }
 
-      // Verify token
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      // Verify token with explicit algorithm constraint to prevent algorithm confusion attacks
+      const decoded = jwt.verify(token, process.env.JWT_SECRET, {
+        algorithms: ["HS256"],
+      });
 
       // Get user from the token, attach to request object
-      if (decoded.id) {
-        req.user = await User.findById(decoded.id).select("-password");
+      const mongoose = require("mongoose");
+      if (decoded.id && mongoose.Types.ObjectId.isValid(decoded.id)) {
+        req.user = await User.findById(decoded.id).select(
+          "-password -resetPasswordToken -resetPasswordExpire -__v"
+        );
       }
 
       // Safe fallback lookup by verified email for this specific account
       if (!req.user && decoded.email) {
-        req.user = await User.findOne({ email: String(decoded.email).toLowerCase() }).select("-password");
+        req.user = await User.findOne({ email: String(decoded.email).toLowerCase() }).select(
+          "-password -resetPasswordToken -resetPasswordExpire -__v"
+        );
       }
 
       if (!req.user) {

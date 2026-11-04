@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const Order = require("../models/Order");
 const Cart = require("../models/Cart");
 const Product = require("../models/Product");
@@ -152,12 +153,13 @@ const createOrder = async (req, res) => {
         if (!item.product) {
           return res.status(400).json({ message: "One of the products in your cart no longer exists" });
         }
-        const { price, availableStock } = resolveItemPriceAndStock(item.product, item);
+        const { price, availableStock, matchedVariant } = resolveItemPriceAndStock(item.product, item);
         resolvedItems.push({
           product: item.product,
           quantity: Math.max(1, parseInt(item.quantity, 10) || 1),
           price,
           availableStock,
+          matchedVariant,
         });
       }
     } else if (req.body.cartItems && Array.isArray(req.body.cartItems) && req.body.cartItems.length > 0) {
@@ -173,13 +175,14 @@ const createOrder = async (req, res) => {
         }
 
         const quantity = Math.max(1, parseInt(rawItem.quantity, 10) || 1);
-        const { price, availableStock } = resolveItemPriceAndStock(productDoc, rawItem);
+        const { price, availableStock, matchedVariant } = resolveItemPriceAndStock(productDoc, rawItem);
 
         resolvedItems.push({
           product: productDoc,
           quantity,
           price, // Authoritatively resolved from DB; client price ignored
           availableStock,
+          matchedVariant,
         });
       }
     }
@@ -188,33 +191,20 @@ const createOrder = async (req, res) => {
       return res.status(400).json({ message: "Cart is empty" });
     }
 
-    // Validate product stock
+    // Validate product stock (strictly reject if stock <= 0 or stock < requested quantity)
     for (const item of resolvedItems) {
-      if (typeof item.availableStock === "number" && item.availableStock > 0 && item.availableStock < item.quantity) {
+      const stock = typeof item.availableStock === "number" ? item.availableStock : 0;
+      if (stock <= 0) {
         return res.status(400).json({
-          message: `Insufficient stock for product: ${item.product.title}. Only ${item.availableStock} left.`,
+          message: `Product "${item.product.title}" is out of stock.`,
+        });
+      }
+      if (stock < item.quantity) {
+        return res.status(400).json({
+          message: `Insufficient stock for product: ${item.product.title}. Only ${stock} left.`,
         });
       }
     }
-
-    // Deduct stock and increment sold count
-    for (const item of resolvedItems) {
-      const product = item.product;
-      if (product && typeof product.save === "function") {
-        if (typeof product.stock === "number") {
-          product.stock = Math.max(0, product.stock - item.quantity);
-        }
-        product.sold = (product.sold || 0) + item.quantity;
-        await product.save();
-      }
-    }
-
-    // Map resolved items to order items with authoritative prices
-    const orderItems = resolvedItems.map((item) => ({
-      product: item.product._id,
-      quantity: item.quantity,
-      price: item.price,
-    }));
 
     let totalAmount = resolvedItems.reduce((acc, curr) => acc + curr.quantity * curr.price, 0);
     totalAmount = Number(totalAmount.toFixed(2));
@@ -222,49 +212,191 @@ const createOrder = async (req, res) => {
     let appliedCoupon = "";
 
     // Apply Coupon if provided
+    let matchedCouponDoc = null;
     if (couponCode) {
       const Coupon = require("../models/Coupon");
       const coupon = await Coupon.findOne({ code: String(couponCode).toUpperCase() });
-      if (coupon && new Date(coupon.expiryDate) >= new Date() && totalAmount >= coupon.minimumAmount) {
-        appliedDiscount = Number(((totalAmount * coupon.discount) / 100).toFixed(2));
-        totalAmount = Number(Math.max(0, totalAmount - appliedDiscount).toFixed(2));
-        appliedCoupon = coupon.code;
+      if (coupon && new Date(coupon.expiryDate) >= new Date() && totalAmount >= (coupon.minimumAmount || 0)) {
+        // Enforce total usage limit if configured
+        const hasLimit = typeof coupon.usageLimit === "number" && coupon.usageLimit > 0;
+        const limitReached = hasLimit && (coupon.usedCount || 0) >= coupon.usageLimit;
+
+        // Enforce per-user limit if configured
+        let perUserLimitReached = false;
+        if (typeof coupon.perUserLimit === "number" && coupon.perUserLimit > 0) {
+          const userOrdersCount = await Order.countDocuments({
+            user: userId,
+            couponCode: coupon.code,
+            orderStatus: { $ne: "Cancelled" },
+          });
+          if (userOrdersCount >= coupon.perUserLimit) {
+            perUserLimitReached = true;
+          }
+        }
+
+        if (!limitReached && !perUserLimitReached) {
+          const discountPct = Math.min(100, Math.max(0, Number(coupon.discount) || 0));
+          appliedDiscount = Number(((totalAmount * discountPct) / 100).toFixed(2));
+
+          // Cap at maxDiscountAmount if configured
+          if (typeof coupon.maxDiscountAmount === "number" && coupon.maxDiscountAmount > 0) {
+            appliedDiscount = Math.min(appliedDiscount, coupon.maxDiscountAmount);
+          }
+
+          appliedDiscount = Math.min(totalAmount, appliedDiscount);
+          totalAmount = Number(Math.max(0, totalAmount - appliedDiscount).toFixed(2));
+          appliedCoupon = coupon.code;
+          matchedCouponDoc = coupon;
+        }
       }
     }
 
-    // Create the order
-    const order = await Order.create({
-      user: userId,
-      orderItems,
-      shippingAddress,
-      paymentMethod,
-      paymentStatus: "Pending",
-      orderStatus: "Pending",
-      totalAmount,
-      couponCode: appliedCoupon,
-      discountAmount: appliedDiscount,
-    });
+    // Start MongoDB session for atomic inventory deduction and order creation
+    const session = await mongoose.startSession();
+    session.startTransaction();
 
-    // Create StockHistory logs
+    let createdOrder = null;
     try {
-      const StockHistory = require("../models/StockHistory");
+      // Atomically deduct stock using conditional queries
       for (const item of resolvedItems) {
-        await StockHistory.create({
-          product: item.product._id,
-          oldStock: (item.product.stock || 0) + item.quantity,
-          newStock: item.product.stock || 0,
-          changeReason: `Order Placed (Order ID: #${order._id.toString().substring(0, 8).toUpperCase()})`,
-          updatedBy: userId,
-        });
+        let updatedProduct = null;
+        if (item.matchedVariant && item.matchedVariant._id) {
+          updatedProduct = await Product.findOneAndUpdate(
+            {
+              _id: item.product._id,
+              stock: { $gte: item.quantity },
+              "variants._id": item.matchedVariant._id,
+              "variants.stock": { $gte: item.quantity },
+            },
+            {
+              $inc: {
+                stock: -item.quantity,
+                sold: item.quantity,
+                "variants.$.stock": -item.quantity,
+              },
+            },
+            { returnDocument: "after", session }
+          );
+        } else {
+          updatedProduct = await Product.findOneAndUpdate(
+            {
+              _id: item.product._id,
+              stock: { $gte: item.quantity },
+            },
+            {
+              $inc: {
+                stock: -item.quantity,
+                sold: item.quantity,
+              },
+            },
+            { returnDocument: "after", session }
+          );
+        }
+
+        if (!updatedProduct) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({
+            message: `Insufficient stock for product: ${item.product.title}. Only limited stock available.`,
+          });
+        }
       }
-    } catch (historyErr) {
-      console.error("Failed to write stock history logs:", historyErr);
+
+      // Map resolved items to order items with authoritative prices and variant tracking
+      const orderItems = resolvedItems.map((item) => ({
+        product: item.product._id,
+        quantity: item.quantity,
+        price: item.price,
+        variantId: item.matchedVariant ? item.matchedVariant._id : null,
+        variant: item.matchedVariant
+          ? {
+              _id: item.matchedVariant._id,
+              color: item.matchedVariant.color,
+              storage: item.matchedVariant.storage,
+              size: item.matchedVariant.size,
+              sku: item.matchedVariant.sku,
+            }
+          : null,
+      }));
+
+      // Create the order inside transaction
+      const [orderDoc] = await Order.create(
+        [
+          {
+            user: userId,
+            orderItems,
+            shippingAddress,
+            paymentMethod,
+            paymentStatus: "Pending",
+            orderStatus: "Pending",
+            totalAmount,
+            couponCode: appliedCoupon,
+            discountAmount: appliedDiscount,
+          },
+        ],
+        { session }
+      );
+      createdOrder = orderDoc;
+
+      // Atomically increment coupon usedCount under concurrency check inside transaction
+      if (matchedCouponDoc) {
+        const Coupon = require("../models/Coupon");
+        const couponFilter = {
+          _id: matchedCouponDoc._id,
+          expiryDate: { $gte: new Date() },
+          $or: [
+            { usageLimit: null },
+            { usageLimit: { $exists: false } },
+            { $expr: { $lt: ["$usedCount", "$usageLimit"] } },
+          ],
+        };
+        const updatedCoupon = await Coupon.findOneAndUpdate(
+          couponFilter,
+          { $inc: { usedCount: 1 } },
+          { session, returnDocument: "after" }
+        );
+        if (!updatedCoupon) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({
+            message: "Coupon is no longer valid or total usage limit has been reached.",
+          });
+        }
+      }
+
+      // Create StockHistory logs inside transaction
+      try {
+        const StockHistory = require("../models/StockHistory");
+        for (const item of resolvedItems) {
+          await StockHistory.create(
+            [
+              {
+                product: item.product._id,
+                oldStock: item.availableStock,
+                newStock: Math.max(0, item.availableStock - item.quantity),
+                changeReason: `Order Placed (Order ID: #${createdOrder._id.toString().substring(0, 8).toUpperCase()})`,
+                updatedBy: userId,
+              },
+            ],
+            { session }
+          );
+        }
+      } catch (historyErr) {
+        console.error("Failed to write stock history logs:", historyErr);
+      }
+
+      // Clear user's cart inside transaction
+      await Cart.deleteMany({ user: userId }, { session });
+
+      await session.commitTransaction();
+      session.endSession();
+    } catch (txErr) {
+      await session.abortTransaction();
+      session.endSession();
+      throw txErr;
     }
 
-    // Clear user's cart
-    await Cart.deleteMany({ user: userId });
-
-    // Populate order details for return payload
+    const order = createdOrder;
     await order.populate([
       { path: "orderItems.product", select: "title price images brand" },
       { path: "shippingAddress" },
@@ -290,21 +422,27 @@ const createOrder = async (req, res) => {
           receipt: order._id.toString(),
         });
 
+        order.razorpayOrderId = razorpayOrder.id;
+        await order.save();
+
+        orderObj.razorpayOrderId = razorpayOrder.id;
         orderObj.razorpayOrder = {
           id: razorpayOrder.id,
           amount: razorpayOrder.amount,
           currency: razorpayOrder.currency,
         };
       } catch (err) {
-        // Rollback stock deduction
+        // Rollback stock deduction atomically
         for (const item of resolvedItems) {
-          const product = item.product;
-          if (product && typeof product.save === "function") {
-            if (typeof product.stock === "number") {
-              product.stock += item.quantity;
-            }
-            product.sold = Math.max(0, (product.sold || 0) - item.quantity);
-            await product.save();
+          if (item.matchedVariant && item.matchedVariant._id) {
+            await Product.findOneAndUpdate(
+              { _id: item.product._id, "variants._id": item.matchedVariant._id },
+              { $inc: { stock: item.quantity, sold: -item.quantity, "variants.$.stock": item.quantity } }
+            );
+          } else {
+            await Product.findByIdAndUpdate(item.product._id, {
+              $inc: { stock: item.quantity, sold: -item.quantity },
+            });
           }
         }
         await Order.findByIdAndDelete(order._id);
@@ -364,47 +502,96 @@ const cancelOrder = async (req, res) => {
     const orderId = req.params.id;
     const userId = req.user._id;
 
-    const order = await Order.findById(orderId);
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({ message: "Invalid order identifier" });
+    }
+
+    // Atomic conditional status transition to prevent duplicate cancellation & race conditions
+    const query = {
+      _id: orderId,
+      orderStatus: { $in: ["Pending", "Processing"] },
+    };
+    if (req.user.role !== "admin") {
+      query.user = userId;
+    }
+
+    const order = await Order.findOneAndUpdate(
+      query,
+      { $set: { orderStatus: "Cancelled" } },
+      { returnDocument: "after" }
+    );
+
     if (!order) {
-      return res.status(404).json({ message: "Order not found" });
+      const existingOrder = await Order.findById(orderId);
+      if (!existingOrder) {
+        return res.status(404).json({ message: "Order not found" });
+      }
+      if (existingOrder.user.toString() !== userId.toString() && req.user.role !== "admin") {
+        return res.status(403).json({ message: "Not authorized to cancel this order" });
+      }
+      if (existingOrder.orderStatus === "Cancelled") {
+        return res.status(400).json({ message: "Order is already cancelled" });
+      }
+      if (existingOrder.orderStatus === "Shipped" || existingOrder.orderStatus === "Delivered") {
+        return res.status(400).json({ message: `Cannot cancel order after it has been ${existingOrder.orderStatus.toLowerCase()}` });
+      }
+      return res.status(400).json({ message: `Cannot cancel order with status: ${existingOrder.orderStatus}` });
     }
 
-    // Verify ownership (unless user is admin)
-    if (order.user.toString() !== userId.toString() && req.user.role !== "admin") {
-      return res.status(403).json({ message: "Not authorized to cancel this order" });
-    }
-
-    // Can only cancel Pending or Processing orders
-    if (order.orderStatus === "Shipped" || order.orderStatus === "Delivered") {
-      return res.status(400).json({ message: `Cannot cancel order after it has been ${order.orderStatus.toLowerCase()}` });
-    }
-
-    if (order.orderStatus === "Cancelled") {
-      return res.status(400).json({ message: "Order is already cancelled" });
-    }
-
-    // Restore product stock and decrement sold count
+    // Restore product and variant stock exactly once
     const StockHistory = require("../models/StockHistory");
     for (const item of order.orderItems) {
-      const product = await Product.findById(item.product);
-      if (product) {
-        const oldStock = product.stock;
-        product.stock += item.quantity;
-        product.sold = Math.max(0, product.sold - item.quantity);
-        await product.save();
-        
-        await StockHistory.create({
-          product: product._id,
-          oldStock,
-          newStock: product.stock,
-          changeReason: `Order Cancelled by Customer (Order ID: #${order._id.toString().substring(0, 8).toUpperCase()})`,
-          updatedBy: userId
-        });
+      let restoredProduct = null;
+      if (item.variantId) {
+        restoredProduct = await Product.findOneAndUpdate(
+          { _id: item.product, "variants._id": item.variantId },
+          {
+            $inc: {
+              stock: item.quantity,
+              sold: -item.quantity,
+              "variants.$.stock": item.quantity,
+            },
+          },
+          { returnDocument: "after" }
+        );
       }
+      if (!restoredProduct) {
+        restoredProduct = await Product.findByIdAndUpdate(
+          item.product,
+          {
+            $inc: {
+              stock: item.quantity,
+              sold: -item.quantity,
+            },
+          },
+          { returnDocument: "after" }
+        );
+      }
+      if (restoredProduct && restoredProduct.sold < 0) {
+        await Product.findByIdAndUpdate(item.product, { $set: { sold: 0 } });
+      }
+
+      await StockHistory.create({
+        product: item.product,
+        oldStock: (restoredProduct?.stock || 0) - item.quantity,
+        newStock: restoredProduct?.stock || 0,
+        changeReason: `Order Cancelled by Customer (Order ID: #${order._id.toString().substring(0, 8).toUpperCase()})`,
+        updatedBy: userId,
+      });
     }
 
-    order.orderStatus = "Cancelled";
-    await order.save();
+    // Restore coupon usedCount if order had a coupon applied
+    if (order.couponCode) {
+      try {
+        const Coupon = require("../models/Coupon");
+        await Coupon.findOneAndUpdate(
+          { code: order.couponCode.toUpperCase(), usedCount: { $gt: 0 } },
+          { $inc: { usedCount: -1 } }
+        );
+      } catch (couponRestoreErr) {
+        console.error("Failed to restore coupon usage count on cancel:", couponRestoreErr.message);
+      }
+    }
 
     await order.populate([
       { path: "orderItems.product", select: "title price images brand" },
@@ -447,64 +634,115 @@ const adminUpdateStatus = async (req, res) => {
       return res.status(400).json({ message: "Invalid status value" });
     }
 
-    const order = await Order.findById(orderId);
-    if (!order) {
+    const existingOrder = await Order.findById(orderId);
+    if (!existingOrder) {
       return res.status(404).json({ message: "Order not found" });
     }
 
-    if (order.orderStatus === "Cancelled" && orderStatus !== "Cancelled") {
+    if (existingOrder.orderStatus === "Cancelled" && orderStatus !== "Cancelled") {
       return res.status(400).json({ message: "Cannot revive a cancelled order" });
     }
 
-    // If changing to Cancelled from admin side, restore stock if not already cancelled
-    if (orderStatus === "Cancelled" && order.orderStatus !== "Cancelled") {
+    let order = existingOrder;
+
+    // If changing to Cancelled from admin side, restore stock exactly once via atomic transition
+    if (orderStatus === "Cancelled" && existingOrder.orderStatus !== "Cancelled") {
+      const updatedOrder = await Order.findOneAndUpdate(
+        {
+          _id: orderId,
+          orderStatus: { $nin: ["Cancelled", "Delivered", "Returned", "Refunded"] },
+        },
+        { $set: { orderStatus: "Cancelled" } },
+        { returnDocument: "after" }
+      );
+
+      if (!updatedOrder) {
+        return res.status(400).json({ message: "Cannot cancel an order that is already cancelled or delivered" });
+      }
+
       const StockHistory = require("../models/StockHistory");
-      for (const item of order.orderItems) {
-        const product = await Product.findById(item.product);
-        if (product) {
-          const oldStock = product.stock;
-          product.stock += item.quantity;
-          product.sold = Math.max(0, product.sold - item.quantity);
-          await product.save();
-          
-          await StockHistory.create({
-            product: product._id,
-            oldStock,
-            newStock: product.stock,
-            changeReason: `Order Cancelled by Admin (Order ID: #${order._id.toString().substring(0, 8).toUpperCase()})`,
-            updatedBy: req.user._id
-          });
+      for (const item of updatedOrder.orderItems) {
+        let restoredProduct = null;
+        if (item.variantId) {
+          restoredProduct = await Product.findOneAndUpdate(
+            { _id: item.product, "variants._id": item.variantId },
+            {
+              $inc: {
+                stock: item.quantity,
+                sold: -item.quantity,
+                "variants.$.stock": item.quantity,
+              },
+            },
+            { returnDocument: "after" }
+          );
+        }
+        if (!restoredProduct) {
+          restoredProduct = await Product.findByIdAndUpdate(
+            item.product,
+            {
+              $inc: {
+                stock: item.quantity,
+                sold: -item.quantity,
+              },
+            },
+            { returnDocument: "after" }
+          );
+        }
+        if (restoredProduct && restoredProduct.sold < 0) {
+          await Product.findByIdAndUpdate(item.product, { $set: { sold: 0 } });
+        }
+
+        await StockHistory.create({
+          product: item.product,
+          oldStock: (restoredProduct?.stock || 0) - item.quantity,
+          newStock: restoredProduct?.stock || 0,
+          changeReason: `Order Cancelled by Admin (Order ID: #${updatedOrder._id.toString().substring(0, 8).toUpperCase()})`,
+          updatedBy: req.user._id,
+        });
+      }
+
+      // Restore coupon usedCount if order had a coupon applied
+      if (updatedOrder.couponCode) {
+        try {
+          const Coupon = require("../models/Coupon");
+          await Coupon.findOneAndUpdate(
+            { code: updatedOrder.couponCode.toUpperCase(), usedCount: { $gt: 0 } },
+            { $inc: { usedCount: -1 } }
+          );
+        } catch (couponRestoreErr) {
+          console.error("Failed to restore coupon usage count on admin cancel:", couponRestoreErr.message);
+        }
+      }
+
+      order = updatedOrder;
+    } else {
+      const oldStatus = order.orderStatus;
+      order.orderStatus = orderStatus;
+      if (orderStatus === "Delivered") {
+        order.paymentStatus = "Paid";
+      }
+      await order.save();
+
+      // Send notifications if status changed to Shipped or Delivered
+      if (oldStatus !== orderStatus) {
+        try {
+          const { sendOrderShippedNotification, sendOrderDeliveredNotification } = require("../services/notificationService");
+          if (orderStatus === "Shipped") {
+            await sendOrderShippedNotification(order);
+          } else if (orderStatus === "Delivered") {
+            await sendOrderDeliveredNotification(order);
+          }
+        } catch (notifyErr) {
+          console.error("Order status update notification failed:", notifyErr);
         }
       }
     }
-
-    const oldStatus = order.orderStatus;
-    order.orderStatus = orderStatus;
-    if (orderStatus === "Delivered") {
-      order.paymentStatus = "Paid";
-    }
-
-    await order.save();
 
     await order.populate([
       { path: "orderItems.product", select: "title price images brand" },
       { path: "shippingAddress" },
-      { path: "user", select: "name email phone" }
+      { path: "user", select: "name email phone" },
     ]);
-
-    // Send notifications if status changed to Shipped or Delivered
-    if (oldStatus !== orderStatus) {
-      try {
-        const { sendOrderShippedNotification, sendOrderDeliveredNotification } = require("../services/notificationService");
-        if (orderStatus === "Shipped") {
-          await sendOrderShippedNotification(order);
-        } else if (orderStatus === "Delivered") {
-          await sendOrderDeliveredNotification(order);
-        }
-      } catch (notifyErr) {
-        console.error("Order status update notification failed:", notifyErr);
-      }
-    }
 
     res.status(200).json(order);
   } catch (error) {
@@ -522,16 +760,80 @@ const verifyPayment = async (req, res) => {
       return res.status(400).json({ message: "All parameters are required" });
     }
 
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({ message: "Invalid order identifier" });
+    }
+
+    // Validate parameter string types
+    if (
+      typeof razorpay_order_id !== "string" ||
+      typeof razorpay_payment_id !== "string" ||
+      typeof razorpay_signature !== "string"
+    ) {
+      return res.status(400).json({ message: "Invalid parameter format" });
+    }
+
     const order = await Order.findOne({ _id: orderId, user: userId });
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
     }
 
+    // 1. Idempotency & Protection for Already-Paid Orders:
+    // If order is already paid, return 200 OK idempotently for duplicate requests with matching payment ID,
+    // and strictly prevent already-paid orders from being cancelled or marked unpaid.
+    if (order.paymentStatus === "Paid") {
+      if (order.razorpayPaymentId && order.razorpayPaymentId === razorpay_payment_id) {
+        await order.populate([
+          { path: "orderItems.product", select: "title price images brand" },
+          { path: "shippingAddress" },
+          { path: "user", select: "name email phone" },
+        ]);
+        return res.status(200).json({
+          success: true,
+          message: "Payment already verified",
+          order,
+        });
+      }
+      return res.status(400).json({
+        success: false,
+        message: "Order is already paid and cannot be modified or re-verified with different credentials",
+      });
+    }
+
+    // 2. Prevent payment verification on already cancelled orders
+    if (order.orderStatus === "Cancelled") {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot verify payment for a cancelled order",
+      });
+    }
+
+    // 3. Verify razorpay_order_id matches order's stored identifier if set
+    if (order.razorpayOrderId && order.razorpayOrderId !== razorpay_order_id) {
+      return res.status(400).json({
+        success: false,
+        message: "Razorpay order ID does not match this order",
+      });
+    }
+
+    // 4. Prevent Payment Replay Attacks across different orders
+    const replayOrder = await Order.findOne({
+      razorpayPaymentId: razorpay_payment_id,
+      _id: { $ne: order._id },
+    });
+    if (replayOrder) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment identifier has already been processed for another order",
+      });
+    }
+
+    // 5. Secure signature verification using timing-safe comparison
     let isSignatureValid = false;
 
     if (isMockMode) {
       console.log("[MOCK RAZORPAY] Verifying mock signature...");
-      isSignatureValid = razorpay_signature.startsWith("mock_sig_");
+      isSignatureValid = typeof razorpay_signature === "string" && razorpay_signature.startsWith("mock_sig_");
     } else {
       const body = razorpay_order_id + "|" + razorpay_payment_id;
       const expectedSignature = crypto
@@ -539,51 +841,111 @@ const verifyPayment = async (req, res) => {
         .update(body.toString())
         .digest("hex");
 
-      isSignatureValid = expectedSignature === razorpay_signature;
+      const expectedBuffer = Buffer.from(expectedSignature, "utf8");
+      const providedBuffer = Buffer.from(razorpay_signature, "utf8");
+
+      if (expectedBuffer.length === providedBuffer.length) {
+        isSignatureValid = crypto.timingSafeEqual(expectedBuffer, providedBuffer);
+      } else {
+        isSignatureValid = false;
+      }
     }
 
     if (isSignatureValid) {
-      order.paymentStatus = "Paid";
-      await order.save();
+      // Atomically update order to Paid
+      const paidOrder = await Order.findOneAndUpdate(
+        {
+          _id: order._id,
+          paymentStatus: { $ne: "Paid" },
+        },
+        {
+          $set: {
+            paymentStatus: "Paid",
+            razorpayOrderId: razorpay_order_id,
+            razorpayPaymentId: razorpay_payment_id,
+            razorpaySignature: razorpay_signature,
+          },
+        },
+        { returnDocument: "after" }
+      );
 
-      await order.populate([
+      const targetOrder = paidOrder || order;
+
+      await targetOrder.populate([
         { path: "orderItems.product", select: "title price images brand" },
         { path: "shippingAddress" },
-        { path: "user", select: "name email phone" }
+        { path: "user", select: "name email phone" },
       ]);
 
-      try {
-        const { sendOrderPlacedNotification } = require("../services/notificationService");
-        await sendOrderPlacedNotification(order);
-      } catch (notifyErr) {
-        console.error("Razorpay order placed notification failed:", notifyErr);
-      }
-
-      res.status(200).json({ success: true, message: "Payment verified successfully", order });
-    } else {
-      // Payment failed, restore stock and cancel order
-      const StockHistory = require("../models/StockHistory");
-      for (const item of order.orderItems) {
-        const product = await Product.findById(item.product);
-        if (product) {
-          const oldStock = product.stock;
-          product.stock += item.quantity;
-          product.sold = Math.max(0, product.sold - item.quantity);
-          await product.save();
-          
-          await StockHistory.create({
-            product: product._id,
-            oldStock,
-            newStock: product.stock,
-            changeReason: `Payment Verification Failed/Aborted (Order ID: #${order._id.toString().substring(0, 8).toUpperCase()})`,
-            updatedBy: userId
-          });
+      if (paidOrder) {
+        try {
+          const { sendOrderPlacedNotification } = require("../services/notificationService");
+          await sendOrderPlacedNotification(targetOrder);
+        } catch (notifyErr) {
+          console.error("Razorpay order placed notification failed:", notifyErr);
         }
       }
 
-      order.paymentStatus = "Failed";
-      order.orderStatus = "Cancelled";
-      await order.save();
+      res.status(200).json({ success: true, message: "Payment verified successfully", order: targetOrder });
+    } else {
+      // Payment verification failed: atomically cancel order & restore stock exactly once
+      const failedOrder = await Order.findOneAndUpdate(
+        {
+          _id: order._id,
+          paymentStatus: { $ne: "Paid" },
+          orderStatus: { $nin: ["Cancelled", "Delivered", "Shipped"] },
+        },
+        {
+          $set: {
+            paymentStatus: "Failed",
+            orderStatus: "Cancelled",
+          },
+        },
+        { returnDocument: "after" }
+      );
+
+      if (failedOrder) {
+        const StockHistory = require("../models/StockHistory");
+        for (const item of failedOrder.orderItems) {
+          let restoredProduct = null;
+          if (item.variantId) {
+            restoredProduct = await Product.findOneAndUpdate(
+              { _id: item.product, "variants._id": item.variantId },
+              {
+                $inc: {
+                  stock: item.quantity,
+                  sold: -item.quantity,
+                  "variants.$.stock": item.quantity,
+                },
+              },
+              { returnDocument: "after" }
+            );
+          }
+          if (!restoredProduct) {
+            restoredProduct = await Product.findByIdAndUpdate(
+              item.product,
+              {
+                $inc: {
+                  stock: item.quantity,
+                  sold: -item.quantity,
+                },
+              },
+              { returnDocument: "after" }
+            );
+          }
+          if (restoredProduct && restoredProduct.sold < 0) {
+            await Product.findByIdAndUpdate(item.product, { $set: { sold: 0 } });
+          }
+
+          await StockHistory.create({
+            product: item.product,
+            oldStock: (restoredProduct?.stock || 0) - item.quantity,
+            newStock: restoredProduct?.stock || 0,
+            changeReason: `Payment Verification Failed/Aborted (Order ID: #${failedOrder._id.toString().substring(0, 8).toUpperCase()})`,
+            updatedBy: userId,
+          });
+        }
+      }
 
       res.status(400).json({ success: false, message: "Invalid payment signature" });
     }
@@ -685,21 +1047,40 @@ const adminUpdateReturnStatus = async (req, res) => {
       // Restore product stock and decrease sold counts
       const StockHistory = require("../models/StockHistory");
       for (const item of order.orderItems) {
-        const product = await Product.findById(item.product);
-        if (product) {
-          const oldStock = product.stock;
-          product.stock += item.quantity;
-          product.sold = Math.max(0, product.sold - item.quantity);
-          await product.save();
-          
-          await StockHistory.create({
-            product: product._id,
-            oldStock,
-            newStock: product.stock,
-            changeReason: `Return Request Approved by Admin (Order ID: #${order._id.toString().substring(0, 8).toUpperCase()})`,
-            updatedBy: req.user._id
-          });
+        let restoredProduct = null;
+        if (item.variantId) {
+          restoredProduct = await Product.findOneAndUpdate(
+            { _id: item.product, "variants._id": item.variantId },
+            {
+              $inc: {
+                stock: item.quantity,
+                sold: -item.quantity,
+                "variants.$.stock": item.quantity,
+              },
+            },
+            { returnDocument: "after" }
+          );
         }
+        if (!restoredProduct) {
+          restoredProduct = await Product.findByIdAndUpdate(
+            item.product,
+            {
+              $inc: { stock: item.quantity, sold: -item.quantity },
+            },
+            { returnDocument: "after" }
+          );
+        }
+        if (restoredProduct && restoredProduct.sold < 0) {
+          await Product.findByIdAndUpdate(item.product, { $set: { sold: 0 } });
+        }
+        
+        await StockHistory.create({
+          product: item.product,
+          oldStock: (restoredProduct?.stock || 0) - item.quantity,
+          newStock: restoredProduct?.stock || 0,
+          changeReason: `Return Request Approved by Admin (Order ID: #${order._id.toString().substring(0, 8).toUpperCase()})`,
+          updatedBy: req.user._id
+        });
       }
     } else if (status === "Rejected") {
       order.orderStatus = "Delivered";

@@ -36,7 +36,11 @@ const uploadToCloudinary = (fileBuffer, originalname) => {
           }
         });
         
-        const fileExt = path.extname(originalname || ".png");
+        const ALLOWED_MOCK_EXTS = [".jpg", ".jpeg", ".png", ".webp", ".avif"];
+        let fileExt = path.extname(originalname || "").toLowerCase();
+        if (!ALLOWED_MOCK_EXTS.includes(fileExt)) {
+          fileExt = ".png";
+        }
         const fileName = `upload_${Date.now()}_${Math.floor(Math.random() * 1000)}${fileExt}`;
 
         [publicUploads, distUploads, serverUploads].forEach(dir => {

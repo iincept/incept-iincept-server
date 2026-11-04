@@ -26,6 +26,26 @@ const couponSchema = new mongoose.Schema(
       type: Date,
       required: [true, "Expiry date is required"],
     },
+    maxDiscountAmount: {
+      type: Number,
+      default: null,
+      min: [0, "Maximum discount cannot be negative"],
+    },
+    usageLimit: {
+      type: Number,
+      default: null,
+      min: [1, "Usage limit must be at least 1"],
+    },
+    usedCount: {
+      type: Number,
+      default: 0,
+      min: [0, "Used count cannot be negative"],
+    },
+    perUserLimit: {
+      type: Number,
+      default: null,
+      min: [1, "Per-user limit must be at least 1"],
+    },
   },
   { timestamps: true }
 );

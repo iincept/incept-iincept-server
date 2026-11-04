@@ -531,4 +531,12 @@ async function seed() {
   }
 }
 
-seed();
+if (require.main === module) {
+  if (process.env.NODE_ENV === "production" && !process.argv.includes("--allow-production")) {
+    console.error("SAFETY ERROR: Running product seed in production requires explicit --allow-production flag.");
+    process.exit(1);
+  }
+  seed();
+}
+
+module.exports = seed;
