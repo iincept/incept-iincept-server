@@ -2,6 +2,12 @@ const Product = require("../models/Product");
 const Category = require("../models/Category");
 const ExcelJS = require("exceljs");
 const { resolveColorHex, isValidHex, normalizeHex } = require("../utils/colorResolver");
+const {
+  detectProductColors,
+  scanExistingProducts,
+  applyDetectedColorsToProducts,
+  rollbackLastBulkUpdate,
+} = require("../services/colorDetectionService");
 
 // Escape user input before using in MongoDB regex queries to prevent Regex Injection & ReDoS
 const escapeRegex = (str) => {
@@ -200,8 +206,31 @@ const createProduct = async (req, res) => {
       }
     }
 
-    const processedVariants = sanitizeVariants(variants);
-    const processedColors = sanitizeColors(colors, processedVariants);
+    let processedVariants = sanitizeVariants(variants);
+    let processedColors = sanitizeColors(colors, processedVariants);
+    let finalColorImages = colorImages || {};
+
+    // Automatic color detection fallback for new products if colors not manually supplied
+    if ((!processedColors || processedColors.length === 0) && Array.isArray(images) && images.length > 0) {
+      try {
+        const detected = await detectProductColors(title, images);
+        if (detected.detectedColors && detected.detectedColors.length > 0) {
+          processedColors = detected.detectedColors;
+          finalColorImages = { ...finalColorImages, ...detected.colorImages };
+          if (processedVariants.length === 0) {
+            processedVariants = detected.suggestedVariants.map((v) => ({
+              ...v,
+              price: Number(price || 0),
+              discountPrice: Number(discountPrice || 0),
+              stock: Number(stock || 10),
+              sku: `PRO-${Date.now().toString().slice(-4)}`
+            }));
+          }
+        }
+      } catch (detErr) {
+        console.warn("[createProduct] Auto color detection fallback warning:", detErr.message);
+      }
+    }
 
     let finalPrice = Number(price);
     if ((isNaN(finalPrice) || finalPrice <= 0) && processedVariants.length > 0) {
@@ -247,7 +276,7 @@ const createProduct = async (req, res) => {
       partNumber: partNumber || "",
       modelNumber: modelNumber || "",
       displayImage: finalDisplayImage,
-      colorImages: colorImages || {},
+      colorImages: finalColorImages,
       seoTitle: req.body.seoTitle || "",
       seoDescription: req.body.seoDescription || "",
       tags: req.body.tags || [],
@@ -358,7 +387,19 @@ const updateProduct = async (req, res) => {
     }
 
     if (variants !== undefined) product.variants = sanitizeVariants(variants);
-    if (colors !== undefined) product.colors = sanitizeColors(colors, product.variants || []);
+    if (colors !== undefined) {
+      product.colors = sanitizeColors(colors, product.variants || []);
+    } else if ((!product.colors || product.colors.length === 0) && Array.isArray(product.images) && product.images.length > 0) {
+      try {
+        const detected = await detectProductColors(product.title, product.images);
+        if (detected.detectedColors && detected.detectedColors.length > 0) {
+          product.colors = detected.detectedColors;
+          product.colorImages = { ...(product.colorImages || {}), ...detected.colorImages };
+        }
+      } catch (detErr) {
+        console.warn("[updateProduct] Auto color detection fallback warning:", detErr.message);
+      }
+    }
     if (partNumber !== undefined) product.partNumber = partNumber;
     if (modelNumber !== undefined) product.modelNumber = modelNumber;
     if (displayImage !== undefined) product.displayImage = displayImage;
@@ -1192,6 +1233,67 @@ const importProductsExcel = async (req, res) => {
   }
 };
 
+// Auto Color Detection Endpoint for Admin Panel (Single Product)
+const detectProductColorsEndpoint = async (req, res) => {
+  try {
+    const { title, images } = req.body;
+    if (!title && (!images || images.length === 0)) {
+      return res.status(400).json({ message: "Product title or images are required for color detection." });
+    }
+    const result = await detectProductColors(title || "", Array.isArray(images) ? images : []);
+    res.status(200).json({ success: true, ...result });
+  } catch (error) {
+    console.error("Detect product colors error:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Bulk Color Scan for All Existing Products
+const bulkColorScanEndpoint = async (req, res) => {
+  try {
+    const query = {};
+    const { category } = req.query;
+    if (category) {
+      query.category = category;
+    }
+    const scanResults = await scanExistingProducts(Product, query);
+    res.status(200).json({
+      success: true,
+      totalCount: scanResults.length,
+      products: scanResults
+    });
+  } catch (error) {
+    console.error("Bulk color scan error:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Bulk Apply Detected Colors Safely to Products
+const bulkColorApplyEndpoint = async (req, res) => {
+  try {
+    const { updates } = req.body;
+    if (!Array.isArray(updates) || updates.length === 0) {
+      return res.status(400).json({ message: "No product updates provided to apply." });
+    }
+    const result = await applyDetectedColorsToProducts(Product, updates);
+    res.status(200).json({ success: true, ...result });
+  } catch (error) {
+    console.error("Bulk color apply error:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Rollback Last Bulk Color Update
+const bulkColorRollbackEndpoint = async (req, res) => {
+  try {
+    const result = await rollbackLastBulkUpdate(Product);
+    res.status(200).json({ success: true, ...result });
+  } catch (error) {
+    console.error("Bulk color rollback error:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
 module.exports = {
   createProduct,
   updateProduct,
@@ -1202,5 +1304,10 @@ module.exports = {
   exportProductsExcel,
   previewImportProductsExcel,
   importProductsExcel,
+  detectProductColorsEndpoint,
+  bulkColorScanEndpoint,
+  bulkColorApplyEndpoint,
+  bulkColorRollbackEndpoint,
 };
+
 

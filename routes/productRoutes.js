@@ -55,6 +55,10 @@ const {
   exportProductsExcel,
   previewImportProductsExcel,
   importProductsExcel,
+  detectProductColorsEndpoint,
+  bulkColorScanEndpoint,
+  bulkColorApplyEndpoint,
+  bulkColorRollbackEndpoint,
 } = require("../controllers/productController");
 const { protect, admin } = require("../middleware/authMiddleware");
 
@@ -65,6 +69,12 @@ router.get("/", getProducts);
 router.get("/export-excel", protect, admin, exportProductsExcel);
 router.post("/import-preview", protect, admin, handleExcelUpload(excelUpload.single("file")), previewImportProductsExcel);
 router.post("/import-excel", protect, admin, handleExcelUpload(excelUpload.single("file")), importProductsExcel);
+
+// Automatic Color Detection & Bulk Scan routes (MUST be before /:id)
+router.post("/detect-colors", protect, admin, detectProductColorsEndpoint);
+router.get("/bulk-color-scan", protect, admin, bulkColorScanEndpoint);
+router.post("/bulk-color-apply", protect, admin, bulkColorApplyEndpoint);
+router.post("/bulk-color-rollback", protect, admin, bulkColorRollbackEndpoint);
 
 router.get("/:id", getProductById);
 
