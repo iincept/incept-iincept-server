@@ -22,6 +22,13 @@ const uploadToCloudinary = (fileBuffer, originalname) => {
     }
 
     if (isMockMode) {
+      if (process.env.VERCEL || process.env.NODE_ENV === "production") {
+        return reject(
+          new Error(
+            "Persistent cloud storage is not configured on production. Please set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET in Vercel Environment Variables."
+          )
+        );
+      }
       const fs = require("fs");
       const path = require("path");
       console.log("[MOCK CLOUDINARY] Uploading file to local uploads directories:", originalname);

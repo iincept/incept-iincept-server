@@ -26,51 +26,68 @@ app.use(
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-// 3. Strict CORS Configuration
+// 3. Robust & Strict CORS Configuration
+const defaultAllowedOrigins = [
+  "https://iincept.com",
+  "https://www.iincept.com",
+  "https://admin.iincept.com",
+  "https://iincept-client.vercel.app",
+  "https://iincept-admin.vercel.app",
+  "https://iincept-server.vercel.app",
+  "http://localhost:5173",
+  "http://localhost:5174",
+  "http://localhost:3000",
+  "http://localhost:5175",
+  "http://127.0.0.1:5173",
+  "http://127.0.0.1:5174",
+  "http://127.0.0.1:3000",
+  "http://127.0.0.1:5175",
+];
+
 const getAllowedOrigins = () => {
   const configuredOrigins = [
     process.env.FRONTEND_URL,
     process.env.CLIENT_URL,
     process.env.ADMIN_URL,
     ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(",") : []),
+    ...defaultAllowedOrigins,
   ]
-    .map((url) => (url ? url.trim() : ""))
+    .map((url) => (url ? url.trim().replace(/\/+$/, "") : ""))
     .filter(Boolean);
-
-  if (process.env.NODE_ENV !== "production") {
-    const devOrigins = [
-      "http://localhost:5173",
-      "http://localhost:5174",
-      "http://localhost:3000",
-      "http://localhost:5175",
-      "http://127.0.0.1:5173",
-      "http://127.0.0.1:5174",
-      "http://127.0.0.1:3000",
-      "http://127.0.0.1:5175",
-    ];
-    return Array.from(new Set([...configuredOrigins, ...devOrigins]));
-  }
 
   return Array.from(new Set(configuredOrigins));
 };
 
+const isAllowedOrigin = (origin) => {
+  if (!origin) return true;
+  const cleanOrigin = origin.trim().replace(/\/+$/, "");
+  const allowed = getAllowedOrigins();
+
+  if (allowed.includes(cleanOrigin)) return true;
+
+  // Safely allow legitimate project Vercel deployments (production & branch previews)
+  // Strictly matches: https://iincept-admin*.vercel.app, https://iincept-client*.vercel.app, https://iincept*.vercel.app
+  if (/^https:\/\/(iincept-admin|iincept-client|iincept)[a-z0-9-_]*\.vercel\.app$/i.test(cleanOrigin)) {
+    return true;
+  }
+
+  return false;
+};
+
 const corsOptions = {
   origin: (origin, callback) => {
-    // Allow server-to-server, curl, Postman, mobile, or requests with no origin
-    if (!origin) return callback(null, true);
-
-    const allowedOrigins = getAllowedOrigins();
-    if (allowedOrigins.includes(origin)) {
+    // Allow requests with no origin (mobile apps, curl, server-to-server) or matched origins
+    if (!origin || isAllowedOrigin(origin)) {
       return callback(null, true);
-    } else {
-      return callback(new Error(`CORS blocked: Origin ${origin} is not allowed`));
     }
+    return callback(new Error(`CORS blocked: Origin ${origin} is not allowed`));
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
   exposedHeaders: ["RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset"],
   maxAge: 86400,
+  optionsSuccessStatus: 204,
 };
 
 app.use(cors(corsOptions));
