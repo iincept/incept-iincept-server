@@ -307,7 +307,7 @@ const settingSchema = new mongoose.Schema(
             yearly: { type: String, default: "" },
             image: { type: String, default: "" },
             planType: { type: String, default: "APPLE CARE+" },
-            duration: { type: String, default: "1 Year & 2 Years" },
+            duration: { type: String, default: "3 Years" },
             features: [{ type: String }],
             isActive: { type: Boolean, default: true }
           }

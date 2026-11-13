@@ -23,8 +23,8 @@ app.use(
 );
 
 // 2. Reasonable JSON and URL-encoded body limits (prevent memory exhaustion DoS)
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ limit: "10mb", extended: true }));
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 // 3. Strict CORS Configuration
 const getAllowedOrigins = () => {

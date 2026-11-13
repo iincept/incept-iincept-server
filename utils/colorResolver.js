@@ -183,6 +183,9 @@ const TECH_BRAND_COLORS = {
   'ice blue': '#E4EFFB',
   'blush': '#E8D4D4',
   'citrus': '#E1E49C',
+  'indigo': '#66728A',
+  'indigo slate': '#66728A',
+  'slate indigo': '#66728A',
   'graphite': '#4C4A46',
   'ultramarine': '#3F58A8'
 };

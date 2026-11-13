@@ -47,6 +47,8 @@ const COLOR_PALETTE = [
   { name: "Cyan", hex: "#00FFFF", rgb: [0, 255, 255], family: "blue" },
   { name: "Teal", hex: "#008080", rgb: [0, 128, 128], family: "blue" },
   { name: "Turquoise", hex: "#40E0D0", rgb: [64, 224, 208], family: "blue" },
+  { name: "Indigo", hex: "#66728A", rgb: [102, 114, 138], family: "blue" },
+  { name: "Indigo Slate", hex: "#66728A", rgb: [102, 114, 138], family: "blue" },
 
   // 5. Purples / Lavender
   { name: "Purple", hex: "#800080", rgb: [128, 0, 128], family: "purple" },
@@ -64,6 +66,7 @@ const COLOR_PALETTE = [
   { name: "Pink", hex: "#FFC0CB", rgb: [255, 192, 203], family: "pink" },
   { name: "Rose Gold", hex: "#B76E79", rgb: [183, 110, 121], family: "pink" },
   { name: "Chalk Pink", hex: "#E8B4B8", rgb: [232, 180, 184], family: "pink" },
+  { name: "Blush", hex: "#E8D3D1", rgb: [232, 211, 209], family: "pink" },
   { name: "Coral", hex: "#FF7F50", rgb: [255, 127, 80], family: "pink" },
 
   // 7. Oranges / Yellows / Gold
@@ -71,6 +74,7 @@ const COLOR_PALETTE = [
   { name: "Sunset Orange", hex: "#FD5E53", rgb: [253, 94, 83], family: "orange" },
   { name: "Peach", hex: "#FFDAB9", rgb: [255, 218, 185], family: "orange" },
   { name: "Yellow", hex: "#FFFF00", rgb: [255, 255, 0], family: "yellow" },
+  { name: "Citrus", hex: "#D6DC7C", rgb: [214, 220, 124], family: "yellow" },
   { name: "Gold", hex: "#FFD700", rgb: [255, 215, 0], family: "yellow" },
   { name: "Desert Titanium", hex: "#D4BBA5", rgb: [212, 187, 165], family: "yellow" },
   { name: "Amber", hex: "#FFBF00", rgb: [255, 191, 0], family: "yellow" },

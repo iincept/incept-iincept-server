@@ -149,6 +149,11 @@ const productSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    accessoryDevice: {
+      type: String,
+      trim: true,
+      default: "",
+    },
     variants: {
       type: [VariantSchema],
       default: [],

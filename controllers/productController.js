@@ -9,6 +9,14 @@ const {
   rollbackLastBulkUpdate,
 } = require("../services/colorDetectionService");
 
+// In-memory cache for getProducts (60s TTL) to prevent MongoDB Atlas network saturation & proxy timeouts
+const productsCache = new Map();
+const CACHE_TTL_MS = 60 * 1000;
+
+const invalidateProductsCache = () => {
+  productsCache.clear();
+};
+
 // Escape user input before using in MongoDB regex queries to prevent Regex Injection & ReDoS
 const escapeRegex = (str) => {
   if (typeof str !== "string") return "";
@@ -60,7 +68,9 @@ const sanitizeColors = (colors, sanitizedVariants = []) => {
       const matched = sanitizedVariants.find(
         (v) => (v.color || "").trim().toLowerCase() === c.trim().toLowerCase()
       );
-      const hex = matched?.colorHex || resolveColorHex(c);
+      const hex = (matched?.colorHex && isValidHex(matched.colorHex))
+        ? normalizeHex(matched.colorHex)
+        : resolveColorHex(c);
       return {
         name: c,
         value: hex,
@@ -69,11 +79,16 @@ const sanitizeColors = (colors, sanitizedVariants = []) => {
     }
     if (c && typeof c === "object") {
       const name = c.name || c.color || "";
+      const matched = sanitizedVariants.find(
+        (v) => (v.color || "").trim().toLowerCase() === name.trim().toLowerCase()
+      );
       const hex =
         c.colorHex && isValidHex(c.colorHex)
           ? normalizeHex(c.colorHex)
           : c.value && isValidHex(c.value)
           ? normalizeHex(c.value)
+          : (matched?.colorHex && isValidHex(matched.colorHex))
+          ? normalizeHex(matched.colorHex)
           : resolveColorHex(name);
       return {
         ...c,
@@ -89,32 +104,82 @@ const sanitizeColors = (colors, sanitizedVariants = []) => {
 const attachFallbackColorHex = (product) => {
   if (!product) return product;
   const p = product.toObject ? product.toObject() : { ...product };
+
+  const colorHexMap = new Map();
+  if (Array.isArray(p.colors)) {
+    p.colors.forEach((c) => {
+      if (typeof c === "object" && c) {
+        const cName = (c.name || c.color || "").trim().toLowerCase();
+        const hex = (c.colorHex && isValidHex(c.colorHex))
+          ? normalizeHex(c.colorHex)
+          : (c.value && isValidHex(c.value))
+          ? normalizeHex(c.value)
+          : null;
+        if (cName && hex) colorHexMap.set(cName, hex);
+      }
+    });
+  }
+
   if (p.variants && Array.isArray(p.variants)) {
     p.variants = p.variants.map((v) => {
       const vObj = v && v.toObject ? v.toObject() : { ...v };
-      if (vObj && vObj.color && (!vObj.colorHex || !isValidHex(vObj.colorHex))) {
-        return { ...vObj, colorHex: resolveColorHex(vObj.color) };
+      if (vObj && vObj.color) {
+        const vColorName = vObj.color.trim().toLowerCase();
+        const mappedHex = colorHexMap.get(vColorName);
+        if (vObj.colorHex && isValidHex(vObj.colorHex)) {
+          vObj.colorHex = normalizeHex(vObj.colorHex);
+        } else if (mappedHex) {
+          vObj.colorHex = mappedHex;
+        } else {
+          vObj.colorHex = resolveColorHex(vObj.color);
+        }
       }
       return vObj;
     });
   }
-  if (p.colors && Array.isArray(p.colors)) {
+
+  if (p.colors && Array.isArray(p.colors) && p.colors.length > 0) {
     p.colors = p.colors.map((c) => {
       if (typeof c === "string") {
-        const hex = resolveColorHex(c);
+        const matched = (p.variants || []).find(
+          (v) => (v.color || "").trim().toLowerCase() === c.trim().toLowerCase()
+        );
+        const hex = (matched?.colorHex && isValidHex(matched.colorHex))
+          ? normalizeHex(matched.colorHex)
+          : resolveColorHex(c);
         return { name: c, value: hex, colorHex: hex };
       }
       if (c && typeof c === "object") {
+        const name = c.name || c.color || "";
+        const matched = (p.variants || []).find(
+          (v) => (v.color || "").trim().toLowerCase() === name.trim().toLowerCase()
+        );
         const hex =
           c.colorHex && isValidHex(c.colorHex)
             ? normalizeHex(c.colorHex)
             : c.value && isValidHex(c.value)
             ? normalizeHex(c.value)
-            : resolveColorHex(c.name || "");
-        return { ...c, value: hex, colorHex: hex };
+            : (matched?.colorHex && isValidHex(matched.colorHex))
+            ? normalizeHex(matched.colorHex)
+            : resolveColorHex(name);
+        return { ...c, name, value: hex, colorHex: hex };
       }
       return c;
     });
+  } else if (p.variants && Array.isArray(p.variants) && p.variants.some((v) => v.color)) {
+    const uniqueColors = [];
+    p.variants.forEach((v) => {
+      if (v.color && !uniqueColors.find((uc) => uc.name.toLowerCase() === v.color.trim().toLowerCase())) {
+        const hex = (v.colorHex && isValidHex(v.colorHex)) ? normalizeHex(v.colorHex) : resolveColorHex(v.color);
+        uniqueColors.push({
+          name: v.color,
+          value: hex,
+          colorHex: hex,
+          images: v.images || [],
+        });
+      }
+    });
+    p.colors = uniqueColors;
   }
   return p;
 };
@@ -280,9 +345,11 @@ const createProduct = async (req, res) => {
       seoTitle: req.body.seoTitle || "",
       seoDescription: req.body.seoDescription || "",
       tags: req.body.tags || [],
+      accessoryDevice: req.body.accessoryDevice || "",
     });
 
-    res.status(201).json(product);
+    invalidateProductsCache();
+    res.status(201).json(attachFallbackColorHex(product));
   } catch (error) {
     if (error.code === 11000) {
       try {
@@ -291,7 +358,7 @@ const createProduct = async (req, res) => {
           ...req.body,
           slug: fallbackSlug
         });
-        return res.status(201).json(product);
+        return res.status(201).json(attachFallbackColorHex(product));
       } catch (retryError) {
         return res.status(400).json({ message: "Duplicate product title/slug. Please use a unique title." });
       }
@@ -400,6 +467,55 @@ const updateProduct = async (req, res) => {
         console.warn("[updateProduct] Auto color detection fallback warning:", detErr.message);
       }
     }
+
+    // Bidirectional sync between colors and variants
+    if (Array.isArray(product.colors) && Array.isArray(product.variants)) {
+      const colorMap = new Map();
+      product.colors.forEach((c) => {
+        if (typeof c === "object" && c) {
+          const cName = (c.name || "").trim().toLowerCase();
+          const hex = (c.colorHex && isValidHex(c.colorHex))
+            ? normalizeHex(c.colorHex)
+            : (c.value && isValidHex(c.value))
+            ? normalizeHex(c.value)
+            : null;
+          if (cName && hex) colorMap.set(cName, hex);
+        }
+      });
+
+      // Sync colorHex into variants
+      product.variants = product.variants.map((v) => {
+        if (v && v.color) {
+          const vColorName = v.color.trim().toLowerCase();
+          const mappedHex = colorMap.get(vColorName);
+          if (mappedHex && (!v.colorHex || !isValidHex(v.colorHex))) {
+            return { ...v, colorHex: mappedHex };
+          }
+        }
+        return v;
+      });
+
+      // Ensure variant colors exist in product.colors
+      product.variants.forEach((v) => {
+        if (v && v.color) {
+          const vColorName = v.color.trim().toLowerCase();
+          const exists = product.colors.find(
+            (c) => (typeof c === "object" ? (c.name || "") : c).trim().toLowerCase() === vColorName
+          );
+          if (!exists) {
+            const hex = (v.colorHex && isValidHex(v.colorHex))
+              ? normalizeHex(v.colorHex)
+              : resolveColorHex(v.color);
+            product.colors.push({
+              name: v.color,
+              value: hex,
+              colorHex: hex,
+              images: v.images || [],
+            });
+          }
+        }
+      });
+    }
     if (partNumber !== undefined) product.partNumber = partNumber;
     if (modelNumber !== undefined) product.modelNumber = modelNumber;
     if (displayImage !== undefined) product.displayImage = displayImage;
@@ -412,6 +528,7 @@ const updateProduct = async (req, res) => {
     if (req.body.seoTitle !== undefined) product.seoTitle = req.body.seoTitle;
     if (req.body.seoDescription !== undefined) product.seoDescription = req.body.seoDescription;
     if (req.body.tags !== undefined) product.tags = req.body.tags;
+    if (req.body.accessoryDevice !== undefined) product.accessoryDevice = req.body.accessoryDevice;
 
     const isRemovingDiscount = discountPrice === 0 || discountPrice === "0" || discountPrice === null || (req.body.hasOwnProperty('discountPrice') && req.body.discountPrice === "");
 
@@ -464,7 +581,8 @@ const updateProduct = async (req, res) => {
       }
     }
 
-    res.status(200).json(updatedProduct);
+    invalidateProductsCache();
+    res.status(200).json(attachFallbackColorHex(updatedProduct));
   } catch (error) {
     if (error.name === "ValidationError") {
       const msg = Object.values(error.errors || {}).map(e => e.message).join(", ") || error.message;
@@ -488,6 +606,7 @@ const deleteProduct = async (req, res) => {
     }
 
     await Product.findByIdAndDelete(productId);
+    invalidateProductsCache();
     res.status(200).json({ message: "Product deleted successfully" });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -498,6 +617,14 @@ const deleteProduct = async (req, res) => {
 const getProducts = async (req, res) => {
   try {
     const { search, category, minPrice, maxPrice, sortBy, order } = req.query;
+
+    // Check fast in-memory cache first to avoid 10s MongoDB Atlas roundtrip
+    const cacheKey = JSON.stringify(req.query || {});
+    const cached = productsCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      return res.status(200).json(cached.data);
+    }
+
     let query = {};
 
     // 1. Search Filter (title, description, brand, sku, partNumber, modelNumber, variants)
@@ -563,9 +690,21 @@ const getProducts = async (req, res) => {
 
     const products = await Product.find(query)
       .populate("category", "name slug")
-      .sort(sort);
+      .sort(sort)
+      .lean();
 
     const formatted = products.map((p) => attachFallbackColorHex(p));
+
+    // Cache the formatted output
+    productsCache.set(cacheKey, {
+      timestamp: Date.now(),
+      data: formatted,
+    });
+    if (productsCache.size > 50) {
+      const oldestKey = productsCache.keys().next().value;
+      productsCache.delete(oldestKey);
+    }
+
     res.status(200).json(formatted);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -1221,6 +1360,7 @@ const importProductsExcel = async (req, res) => {
       }
     }
 
+    invalidateProductsCache();
     res.status(200).json({
       message: `Excel sheet uploaded successfully! Created ${createdCount} new products, updated ${updatedCount} existing products.`,
       createdCount,
@@ -1276,6 +1416,7 @@ const bulkColorApplyEndpoint = async (req, res) => {
       return res.status(400).json({ message: "No product updates provided to apply." });
     }
     const result = await applyDetectedColorsToProducts(Product, updates);
+    invalidateProductsCache();
     res.status(200).json({ success: true, ...result });
   } catch (error) {
     console.error("Bulk color apply error:", error);
@@ -1308,6 +1449,7 @@ module.exports = {
   bulkColorScanEndpoint,
   bulkColorApplyEndpoint,
   bulkColorRollbackEndpoint,
+  invalidateProductsCache,
 };
 
 
