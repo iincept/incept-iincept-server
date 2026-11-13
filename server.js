@@ -78,8 +78,14 @@ app.use(cors(corsOptions));
 // 4. Global API Rate Limiter
 app.use("/api", apiLimiter);
 
-app.use("/uploads", express.static(path.join(__dirname, "../client/public/uploads")));
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+app.use("/uploads", express.static(path.join(__dirname, "../client/public/uploads"), {
+  maxAge: '7d',
+  immutable: true,
+}));
+app.use("/uploads", express.static(path.join(__dirname, "uploads"), {
+  maxAge: '7d',
+  immutable: true,
+}));
 app.use(express.static(path.join(__dirname, "../client/public")));
 
 // Routes

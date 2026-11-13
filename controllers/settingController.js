@@ -852,7 +852,10 @@ const updateSettings = async (req, res) => {
       }));
     }
     if (testimonials !== undefined) settings.testimonials = testimonials;
-    if (navbarMenuItems !== undefined) settings.navbarMenuItems = navbarMenuItems;
+    if (navbarMenuItems !== undefined) {
+      settings.navbarMenuItems = navbarMenuItems;
+      settings.markModified('navbarMenuItems');
+    }
     if (categoryIconGroups !== undefined) settings.categoryIconGroups = categoryIconGroups;
     if (appleCarePlans !== undefined) settings.appleCarePlans = appleCarePlans;
     if (appleCarePricingTables !== undefined) {
