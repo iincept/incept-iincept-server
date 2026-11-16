@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 
 const VariantSchema = new mongoose.Schema({
   size: String,
+  caseSize: String,
   bandSize: String,
   strapSize: String,
   connectivity: String,
@@ -82,6 +83,10 @@ const productSchema = new mongoose.Schema(
       max: [5, "Rating cannot exceed 5"],
     },
     sizes: {
+      type: [String],
+      default: [],
+    },
+    caseSizes: {
       type: [String],
       default: [],
     },

@@ -229,6 +229,7 @@ const createProduct = async (req, res) => {
       brand,
       stock,
       sizes,
+      caseSizes,
       accessoriesSizes,
       bandSizes,
       strapSizes,
@@ -325,6 +326,7 @@ const createProduct = async (req, res) => {
       brand,
       stock: finalStock,
       sizes: sizes || [],
+      caseSizes: caseSizes || [],
       accessoriesSizes: accessoriesSizes || [],
       bandSizes: bandSizes || [],
       strapSizes: strapSizes || [],
@@ -387,6 +389,7 @@ const updateProduct = async (req, res) => {
       brand,
       stock,
       sizes,
+      caseSizes,
       accessoriesSizes,
       bandSizes,
       strapSizes,
@@ -432,6 +435,7 @@ const updateProduct = async (req, res) => {
 
     if (stock !== undefined) product.stock = Number(stock);
     if (sizes) product.sizes = sizes;
+    if (caseSizes) product.caseSizes = caseSizes;
     if (accessoriesSizes) product.accessoriesSizes = accessoriesSizes;
     if (bandSizes) product.bandSizes = bandSizes;
     if (strapSizes) product.strapSizes = strapSizes;
