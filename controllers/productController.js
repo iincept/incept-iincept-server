@@ -249,11 +249,24 @@ const createProduct = async (req, res) => {
       colorImages,
     } = req.body;
 
-    // Validate category exists
-    const categoryExists = await Category.findById(category);
+    // Validate category exists (support ObjectId, slug, or name)
+    const mongoose = require("mongoose");
+    let categoryExists = null;
+    if (category && mongoose.Types.ObjectId.isValid(category)) {
+      categoryExists = await Category.findById(category);
+    }
+    if (!categoryExists && category) {
+      categoryExists = await Category.findOne({
+        $or: [
+          { name: { $regex: new RegExp(`^${category}$`, 'i') } },
+          { slug: { $regex: new RegExp(`^${category}$`, 'i') } }
+        ]
+      });
+    }
     if (!categoryExists) {
       return res.status(400).json({ message: "Category does not exist" });
     }
+    const resolvedCategoryId = categoryExists._id;
 
     const slug = await generateUniqueSlug(title);
 
@@ -322,7 +335,7 @@ const createProduct = async (req, res) => {
       discountPercent: discountPercent || 0,
       discount: discount || 0,
       images: images && images.length > 0 ? images : (finalDisplayImage ? [finalDisplayImage] : []),
-      category,
+      category: resolvedCategoryId,
       brand,
       stock: finalStock,
       sizes: sizes || [],
@@ -414,13 +427,25 @@ const updateProduct = async (req, res) => {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    // If category is changing, validate it exists
+    // If category is changing, validate it exists (support ObjectId, slug, or name)
     if (category) {
-      const categoryExists = await Category.findById(category);
+      const mongoose = require("mongoose");
+      let categoryExists = null;
+      if (mongoose.Types.ObjectId.isValid(category)) {
+        categoryExists = await Category.findById(category);
+      }
+      if (!categoryExists) {
+        categoryExists = await Category.findOne({
+          $or: [
+            { name: { $regex: new RegExp(`^${category}$`, 'i') } },
+            { slug: { $regex: new RegExp(`^${category}$`, 'i') } }
+          ]
+        });
+      }
       if (!categoryExists) {
         return res.status(400).json({ message: "Category does not exist" });
       }
-      product.category = category;
+      product.category = categoryExists._id;
     }
 
     if (title) {
