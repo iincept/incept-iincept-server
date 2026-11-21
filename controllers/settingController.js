@@ -856,7 +856,10 @@ const updateSettings = async (req, res) => {
       settings.navbarMenuItems = navbarMenuItems;
       settings.markModified('navbarMenuItems');
     }
-    if (categoryIconGroups !== undefined) settings.categoryIconGroups = categoryIconGroups;
+    if (categoryIconGroups !== undefined) {
+      settings.categoryIconGroups = categoryIconGroups;
+      settings.markModified('categoryIconGroups');
+    }
     if (appleCarePlans !== undefined) settings.appleCarePlans = appleCarePlans;
     if (appleCarePricingTables !== undefined) {
       const calcPrice = (mrp, disc) => {

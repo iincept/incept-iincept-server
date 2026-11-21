@@ -15,10 +15,13 @@ router.use(protect);
 
 router.post("/merge", mergeCart);
 
+router.delete("/clear", clearCart);
+
 router.route("/")
   .get(getCart)
   .post(addToCart)
-  .delete(clearCart);
+  .put(updateQuantity)
+  .delete(removeFromCart);
 
 router.route("/:productId")
   .put(updateQuantity)
